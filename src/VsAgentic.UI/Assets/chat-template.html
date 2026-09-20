@@ -15,7 +15,10 @@
     --success: #4ec9b0;
     --error: #f44747;
     --info: #808080;
-    --user-bg: #252526;
+    --prompt-bg: #202830;
+    --prompt-border: #3d4b59;
+    --prompt-accent: #569cd6;
+    --thinking-bg: #252526;
     --code-bg: #3c3c3c;
     --pre-bg: #1e1e1e;
 }
@@ -60,6 +63,41 @@ html, body {
     background: transparent;
 }
 
+/* Jump-to-latest button: only shown once the user has scrolled away from the
+   bottom, so reading back through a conversation is never interrupted by new
+   output arriving off-screen below. */
+#scroll-bottom-btn {
+    position: fixed;
+    /* Tucked into the very bottom-right corner: clear of the 8px scrollbar,
+       and low enough to sit below the text of the last message rather than
+       over it. */
+    right: 14px;
+    bottom: 4px;
+    width: 28px;
+    height: 28px;
+    border-radius: 14px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    cursor: pointer;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    z-index: 900;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+}
+#scroll-bottom-btn.visible { display: flex; }
+#scroll-bottom-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-input);
+}
+/* Something arrived below the fold while the user was reading elsewhere. */
+#scroll-bottom-btn.has-new {
+    color: var(--accent);
+    border-color: var(--accent);
+}
+
 /* Copy button on hover */
 .msg {
     position: relative;
@@ -88,6 +126,10 @@ html, body {
 .msg:hover .msg-copy-btn {
     opacity: 1;
 }
+.msg.code-hover .msg-copy-btn {
+    opacity: 0;
+    pointer-events: none;
+}
 .msg-copy-btn:hover {
     color: var(--text-primary);
     background: var(--bg-input);
@@ -104,6 +146,7 @@ html, body {
     border-radius: 4px;
     padding: 4px 0;
     min-width: 120px;
+    white-space: nowrap;
     box-shadow: 0 2px 8px rgba(0,0,0,0.3);
     z-index: 1000;
     display: none;
@@ -124,16 +167,20 @@ html, body {
 .msg { margin: 2px 12px; }
 
 .msg-user {
-    background: var(--user-bg);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 8px;
+    background: var(--prompt-bg);
+    border: 1px solid var(--prompt-border);
+    border-left: 4px solid var(--prompt-accent);
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin-top: 14px;
+    margin-bottom: 12px;
 }
 .msg-user .msg-label {
-    font-weight: 600;
-    font-size: 11px;
-    margin-bottom: 2px;
-    color: var(--accent);
+    font-weight: 700;
+    font-size: 10px;
+    letter-spacing: 0.6px;
+    margin-bottom: 6px;
+    color: var(--prompt-accent);
 }
 
 .msg-assistant {
@@ -243,7 +290,7 @@ html, body {
 }
 .thinking-content {
     display: none;
-    background: var(--user-bg);
+    background: var(--thinking-bg);
     border-radius: 4px;
     padding: 10px 8px;
     margin: 4px 0 4px 18px;
@@ -265,7 +312,7 @@ html, body {
     left: 0;
     right: 0;
     height: 30px;
-    background: linear-gradient(transparent, var(--user-bg));
+    background: linear-gradient(transparent, var(--thinking-bg));
 }
 
 /* Streaming indicator */
@@ -311,6 +358,44 @@ html, body {
     border-radius: 0;
     font-size: 12px;
     color: var(--text-primary);
+}
+/* Copy button on code blocks. The <pre> is wrapped in .code-block so the
+   button stays pinned when the code scrolls horizontally inside the <pre>. */
+.code-block {
+    position: relative;
+}
+.code-block > pre {
+    /* Room for the button so it never sits on top of the first code line. */
+    padding-right: 36px;
+}
+.code-copy-btn {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    width: 22px;
+    height: 22px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--text-muted);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0.45;
+    transition: opacity 0.15s;
+    z-index: 5;
+    padding: 0;
+    line-height: 1;
+}
+.code-block:hover .code-copy-btn { opacity: 1; }
+.code-copy-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-input);
+}
+.code-copy-btn.copied {
+    color: var(--success);
+    opacity: 1;
 }
 .md-content blockquote {
     border-left: 3px solid var(--accent);
@@ -452,9 +537,42 @@ function scrollToBottom() {
 }
 
 function maybeScrollToBottom() {
-    if (!_userScrolledUp) {
+    if (_userScrolledUp) {
+        // Reading further up: don't yank the view, just light up the button.
+        _hasNewBelow = true;
+        updateScrollButton();
+    } else {
         scrollToBottom();
     }
+}
+
+// --- Jump-to-latest button ---
+
+var _scrollBtn;
+var _hasNewBelow = false;
+
+var ICON_ARROW_DOWN = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="2.5" x2="8" y2="12.5"/><polyline points="3.5 8.5 8 13 12.5 8.5"/></svg>';
+
+function updateScrollButton() {
+    if (!_scrollBtn) return;
+    if (!_userScrolledUp) _hasNewBelow = false;
+    _scrollBtn.classList.toggle('visible', _userScrolledUp);
+    _scrollBtn.classList.toggle('has-new', _userScrolledUp && _hasNewBelow);
+    _scrollBtn.title = _hasNewBelow ? 'New messages below' : 'Scroll to latest';
+}
+
+function createScrollButton() {
+    _scrollBtn = document.createElement('button');
+    _scrollBtn.id = 'scroll-bottom-btn';
+    _scrollBtn.title = 'Scroll to latest';
+    _scrollBtn.innerHTML = ICON_ARROW_DOWN;
+    _scrollBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        _userScrolledUp = false;
+        scrollToBottom();
+        updateScrollButton();
+    });
+    document.body.appendChild(_scrollBtn);
 }
 
 // --- Public API ---
@@ -470,11 +588,12 @@ function addMessage(id, type, dataJson) {
         div.classList.add('msg-user');
         var label = document.createElement('div');
         label.className = 'msg-label';
-        label.textContent = 'You';
+        label.textContent = 'YOU';
         var content = document.createElement('div');
         content.className = 'md-content msg-content';
         content.innerHTML = renderUserMd(data.Content || '');
         linkifyFilePaths(content);
+        addCodeCopyButtons(content);
         div.appendChild(label);
         div.appendChild(content);
     }
@@ -490,6 +609,7 @@ function addMessage(id, type, dataJson) {
         if (data.IsStreaming) content.classList.add('streaming-cursor');
         content.innerHTML = renderMd(data.Content || '');
         linkifyFilePaths(content);
+        addCodeCopyButtons(content);
         inner.appendChild(bullet);
         inner.appendChild(content);
         div.appendChild(inner);
@@ -610,7 +730,16 @@ function addMessage(id, type, dataJson) {
     }
 
     _container.appendChild(div);
-    maybeScrollToBottom();
+    if (type === 'User') {
+        // A prompt the user just sent themselves: take them to it no matter
+        // where they were reading. Only output that arrives on its own is
+        // allowed to stay below the fold.
+        _userScrolledUp = false;
+        scrollToBottom();
+        updateScrollButton();
+    } else {
+        maybeScrollToBottom();
+    }
 }
 
 var _rafPending = {};
@@ -627,6 +756,7 @@ function updateContent(id, contentMarkdown) {
             if (mc) {
                 mc.innerHTML = type === 'User' ? renderUserMd(contentMarkdown) : renderMd(contentMarkdown);
                 linkifyFilePaths(mc);
+                addCodeCopyButtons(mc);
             }
         } else if (type === 'ToolStep' || type === 'Thinking') {
             var sc = el.querySelector('.msg-streaming-content');
@@ -663,6 +793,7 @@ function setBody(id, bodyContent, bodyMode) {
         body.innerHTML = renderMd(bodyContent);
     }
     linkifyFilePaths(body);
+    addCodeCopyButtons(body);
     body.style.display = '';
 
     // Apply cap and show-more link
@@ -709,6 +840,7 @@ function completeMessage(id) {
 function clearAll() {
     if (_container) _container.innerHTML = '';
     _userScrolledUp = false;
+    updateScrollButton();
 }
 
 function loadMessages(jsonArray) {
@@ -725,7 +857,9 @@ function loadMessages(jsonArray) {
             completeMessage(m.Id);
         }
     }
+    _userScrolledUp = false;
     scrollToBottom();
+    updateScrollButton();
 }
 
 function setThemeColors(colorsJson) {
@@ -740,15 +874,47 @@ function setThemeColors(colorsJson) {
 
 // --- Event handlers ---
 
+// The host resolves the path, so it also does the work: only it knows the
+// solution directory a relative path hangs off.
+function requestFileLink(action, path) {
+    window.chrome.webview.postMessage(JSON.stringify({type:'fileLink', action:action, path:path}));
+}
+
 document.addEventListener('click', function(e) {
     var link = e.target.closest('a.file-link');
     if (link) {
         e.preventDefault();
         var path = link.dataset.path;
-        if (path) {
-            window.chrome.webview.postMessage(JSON.stringify({type:'openFile', path:path}));
-        }
+        if (path) requestFileLink('open', path);
     }
+});
+
+// --- Zoom ---
+// The host owns the zoom level, because it also scales the input box and the
+// banners that sit outside this page. Ctrl+wheel and Ctrl+/- are swallowed by
+// the browser whenever the pointer or focus is in here, so forward the intent
+// rather than acting on it: +1 in, -1 out, 0 back to 100%.
+function requestZoom(step) {
+    window.chrome.webview.postMessage(JSON.stringify({type:'zoom', step:step}));
+}
+
+// passive:false — preventDefault is ignored on a passive wheel listener, and
+// the chat would scroll while zooming.
+window.addEventListener('wheel', function(e) {
+    if (!e.ctrlKey || e.deltaY === 0) return;
+    e.preventDefault();
+    requestZoom(e.deltaY < 0 ? 1 : -1);
+}, {passive: false});
+
+window.addEventListener('keydown', function(e) {
+    if (!e.ctrlKey || e.altKey) return;
+    // e.code catches the numpad and layouts where '+' needs a shift; e.key
+    // catches the rest. '=' is the unshifted US '+' key, which browsers accept.
+    if (e.key === '+' || e.key === '=' || e.code === 'NumpadAdd') requestZoom(1);
+    else if (e.key === '-' || e.code === 'NumpadSubtract') requestZoom(-1);
+    else if (e.key === '0' || e.code === 'Numpad0') requestZoom(0);
+    else return;
+    e.preventDefault();
 });
 
 // --- Copy button ---
@@ -789,6 +955,58 @@ function copyToClipboard(text) {
     document.body.removeChild(ta);
 }
 
+function flashCopied(btn) {
+    btn.innerHTML = ICON_CHECK;
+    btn.classList.add('copied');
+    setTimeout(function() {
+        btn.innerHTML = ICON_COPY;
+        btn.classList.remove('copied');
+    }, 1500);
+}
+
+// Give every fenced code block its own copy button, so a prompt or snippet
+// can be taken without selecting it by hand.
+function addCodeCopyButtons(container) {
+    var pres = container.querySelectorAll('pre');
+    for (var i = 0; i < pres.length; i++) {
+        var pre = pres[i];
+        if (pre.parentNode && pre.parentNode.classList.contains('code-block')) continue;
+
+        var wrap = document.createElement('div');
+        wrap.className = 'code-block';
+        pre.parentNode.insertBefore(wrap, pre);
+        wrap.appendChild(pre);
+
+        var btn = document.createElement('button');
+        btn.className = 'code-copy-btn';
+        btn.title = 'Copy code to clipboard';
+        btn.innerHTML = ICON_COPY;
+        // Bind per-iteration so the handler copies its own block.
+        btn.addEventListener('click', (function(target, button) {
+            return function(e) {
+                e.stopPropagation();
+                var code = target.querySelector('code');
+                var text = (code || target).innerText;
+                if (!text) return;
+                copyToClipboard(text.replace(/\n$/, ''));
+                flashCopied(button);
+            };
+        })(pre, btn));
+        wrap.appendChild(btn);
+
+        // A code block at the very top of a message would sit under the
+        // message-level copy button; yield to the code button while hovering.
+        wrap.addEventListener('mouseenter', function() {
+            var msg = this.closest('.msg');
+            if (msg) msg.classList.add('code-hover');
+        });
+        wrap.addEventListener('mouseleave', function() {
+            var msg = this.closest('.msg');
+            if (msg) msg.classList.remove('code-hover');
+        });
+    }
+}
+
 function addCopyButton(msgDiv) {
     var btn = document.createElement('button');
     btn.className = 'msg-copy-btn';
@@ -799,12 +1017,7 @@ function addCopyButton(msgDiv) {
         var text = getMessageText(msgDiv);
         if (!text) return;
         copyToClipboard(text);
-        btn.innerHTML = ICON_CHECK;
-        btn.classList.add('copied');
-        setTimeout(function() {
-            btn.innerHTML = ICON_COPY;
-            btn.classList.remove('copied');
-        }, 1500);
+        flashCopied(btn);
     });
     msgDiv.appendChild(btn);
 }
@@ -830,35 +1043,55 @@ loadMessages = function(jsonArray) {
 };
 
 // --- Context menu ---
+// One menu, refilled on every right-click with what fits the target: a file
+// link gets the file actions, a selection gets Copy.
 var _ctxMenu;
-function createCtxMenu() {
-    _ctxMenu = document.createElement('div');
-    _ctxMenu.className = 'ctx-menu';
-    var copyItem = document.createElement('div');
-    copyItem.className = 'ctx-menu-item';
-    copyItem.textContent = 'Copy';
-    copyItem.addEventListener('click', function() {
-        var sel = window.getSelection().toString();
-        if (sel) {
-            copyToClipboard(sel);
-        }
-        _ctxMenu.style.display = 'none';
+function showCtxMenu(e, items) {
+    if (!_ctxMenu) {
+        _ctxMenu = document.createElement('div');
+        _ctxMenu.className = 'ctx-menu';
+        document.body.appendChild(_ctxMenu);
+    }
+    _ctxMenu.innerHTML = '';
+    items.forEach(function(item) {
+        var el = document.createElement('div');
+        el.className = 'ctx-menu-item';
+        el.textContent = item.label;
+        el.addEventListener('click', function() {
+            _ctxMenu.style.display = 'none';
+            item.run();
+        });
+        _ctxMenu.appendChild(el);
     });
-    _ctxMenu.appendChild(copyItem);
-    document.body.appendChild(_ctxMenu);
+    _ctxMenu.style.display = 'block';
+    // Position near cursor, clamped to viewport. Measured once shown, since
+    // the size depends on the items.
+    var x = Math.min(e.clientX, window.innerWidth - _ctxMenu.offsetWidth - 4);
+    var y = Math.min(e.clientY, window.innerHeight - _ctxMenu.offsetHeight - 4);
+    _ctxMenu.style.left = Math.max(0, x) + 'px';
+    _ctxMenu.style.top = Math.max(0, y) + 'px';
 }
 
 document.addEventListener('contextmenu', function(e) {
+    if (_ctxMenu) _ctxMenu.style.display = 'none';
+    var link = e.target.closest('a.file-link');
+    var path = link && link.dataset.path;
+    if (path) {
+        e.preventDefault();
+        showCtxMenu(e, [
+            { label: 'Open', run: function() { requestFileLink('open', path); } },
+            { label: 'Copy path', run: function() { requestFileLink('copyPath', path); } },
+            { label: 'Show in Explorer', run: function() { requestFileLink('showInExplorer', path); } }
+        ]);
+        return;
+    }
+
     var sel = window.getSelection().toString();
     if (sel) {
         e.preventDefault();
-        if (!_ctxMenu) createCtxMenu();
-        _ctxMenu.style.display = 'block';
-        // Position near cursor, clamped to viewport
-        var x = Math.min(e.clientX, window.innerWidth - 140);
-        var y = Math.min(e.clientY, window.innerHeight - 40);
-        _ctxMenu.style.left = x + 'px';
-        _ctxMenu.style.top = y + 'px';
+        showCtxMenu(e, [
+            { label: 'Copy', run: function() { copyToClipboard(sel); } }
+        ]);
     }
 });
 
@@ -870,7 +1103,31 @@ document.addEventListener('DOMContentLoaded', function() {
     _container = document.getElementById('chat-container');
     _container.addEventListener('scroll', function() {
         _userScrolledUp = !isNearBottom();
+        updateScrollButton();
     });
+    createScrollButton();
+
+    // The webview shrinks whenever the host grows the area below it - the input
+    // box gaining a line as the user types, the "Thinking..." bar appearing, a
+    // banner opening, the resize grip being dragged. Scrolling happened against
+    // the old height, so without this the last message ends up clipped by the
+    // new bottom edge until the next chunk of output arrives.
+    if (window.ResizeObserver) {
+        var reanchor = new ResizeObserver(function() {
+            if (!_userScrolledUp) scrollToBottom();
+        });
+        reanchor.observe(_container);
+    } else {
+        window.addEventListener('resize', function() {
+            if (!_userScrolledUp) scrollToBottom();
+        });
+    }
+
+    // Images and fonts settle after their message is already in the DOM and
+    // push the content taller; re-pin so they don't shove the tail off-screen.
+    document.addEventListener('load', function(e) {
+        if (e.target && e.target.tagName === 'IMG' && !_userScrolledUp) scrollToBottom();
+    }, true);
 });
 </script>
 </head>

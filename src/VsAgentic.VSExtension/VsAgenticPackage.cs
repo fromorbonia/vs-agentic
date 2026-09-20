@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows;
+using System.Windows.Threading;
 using VsAgentic.Services.Abstractions;
 using VsAgentic.Services.DependencyInjection;
 using VsAgentic.Services.Services;
@@ -43,6 +44,8 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
     private static readonly SemaphoreSlim _openSessionGate = new(1, 1);
     private int _nextWindowId;
     private uint _solutionEventsCookie;
+    private Action<double>? _persistZoom;
+    private DispatcherTimer? _zoomSaveTimer;
 
     public static bool IsLoaded => _instance is not null;
 
@@ -83,8 +86,10 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
             });
         };
 
-        // Listen for file-open requests from rendered markdown
-        ChatWebView.FileOpenRequested += OnFileOpenRequested;
+        // Listen for clicks and menu picks on file links in rendered markdown
+        ChatWebView.FileLinkRequested += OnFileLinkRequested;
+
+        InitializeZoom();
 
         // Listen for solution open/close/switch events
         if (await GetServiceAsync(typeof(SVsSolution)) is IVsSolution solutionService)
@@ -106,6 +111,54 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
             }
             catch (OperationCanceledException) { }
         }, cancellationToken);
+    }
+
+    /// <summary>
+    /// Seeds the shared chat zoom from the persisted setting and writes every
+    /// later change straight back. Zoom is set from the chat window rather than
+    /// from Tools → Options, so nothing else would ever save it.
+    /// </summary>
+    private void InitializeZoom()
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+
+        var optionsPage = (VsAgenticOptionsPage?)GetDialogPage(typeof(VsAgenticOptionsPage));
+        if (optionsPage is null) return;
+
+        ChatZoom.Initialize(optionsPage.ZoomPercent / 100.0);
+
+        // Coalesced rather than written per step: SaveSettingsToStorage
+        // reflects over the whole page and hits the settings store, and one
+        // spin of the wheel is a dozen steps. Writing inline would stutter the
+        // very gesture this feature exists for.
+        _zoomSaveTimer = new DispatcherTimer(DispatcherPriority.Background)
+        {
+            Interval = TimeSpan.FromMilliseconds(500)
+        };
+        _zoomSaveTimer.Tick += (_, _) => SaveZoomSetting(optionsPage);
+
+        _persistZoom = _ =>
+        {
+            _zoomSaveTimer.Stop();
+            _zoomSaveTimer.Start();
+        };
+        ChatZoom.Changed += _persistZoom;
+    }
+
+    private void SaveZoomSetting(VsAgenticOptionsPage optionsPage)
+    {
+        _zoomSaveTimer?.Stop();
+
+        try
+        {
+            optionsPage.ZoomPercent = (int)Math.Round(ChatZoom.Level * 100);
+            optionsPage.SaveSettingsToStorage();
+        }
+        catch (Exception ex)
+        {
+            // Worst case the level is forgotten at the next restart.
+            System.Diagnostics.Debug.WriteLine($"VsAgentic: Failed to persist zoom: {ex}");
+        }
     }
 
     private async Task InitializeSessionPersistenceAsync()
@@ -178,10 +231,22 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
             {
                 options.ClaudeCliPath = optionsPage.ClaudeCliPath;
                 options.CliPermissionMode = optionsPage.CliPermissionMode;
+                options.Model = optionsPage.Model;
+                options.Effort = optionsPage.Effort;
+                options.UsagePlan = optionsPage.UsagePlan;
+                options.FiveHourTokenBudget = optionsPage.FiveHourTokenBudget;
+                options.WeeklyTokenBudget = optionsPage.WeeklyTokenBudget;
             }
         });
 
         var provider = services.BuildServiceProvider();
+
+        // ChatWebView is instantiated by XAML, so it gets its logger handed to
+        // it rather than injected.
+        var loggerFactory = provider.GetService<Microsoft.Extensions.Logging.ILoggerFactory>();
+        if (loggerFactory is not null)
+            VsAgentic.UI.Controls.ChatWebView.Logger = loggerFactory.CreateLogger("VsAgentic.UI.Controls.ChatWebView");
+
         var chatService = provider.GetRequiredService<IChatService>();
         var optionsAccessor = provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<VsAgentic.Services.Configuration.VsAgenticOptions>>();
         var permissionBroker = provider.GetRequiredService<VsAgentic.Services.ClaudeCli.Permissions.IPermissionBroker>();
@@ -189,6 +254,27 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         var vmLogger = provider.GetService<Microsoft.Extensions.Logging.ILogger<ChatSessionViewModel>>();
 
         var vm = new ChatSessionViewModel(chatService, outputListener, optionsAccessor, permissionBroker, questionBroker, vmLogger);
+
+        // The status bar pickers only change this session; persisting the choice so
+        // the next one starts the same way is the host's side of the deal.
+        if (optionsPage is not null)
+        {
+            vm.ModelEffortChanged += (alias, effort) =>
+            {
+                try
+                {
+                    optionsPage.Model = alias;
+                    optionsPage.Effort = effort;
+                    optionsPage.SaveSettingsToStorage();
+                }
+                catch (Exception ex)
+                {
+                    // Worst case the choice is forgotten at the next restart.
+                    Log.Warning(ex, "Could not persist the model/effort choice");
+                }
+            };
+        }
+
         vm.SetServiceScope(provider);
         return vm;
     }
@@ -325,6 +411,19 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
 
                     // Link the view model to its session entry so cost updates flow back to the list
                     viewModel.SessionInfo = session;
+                    viewModel.HasCustomTitle = session.HasCustomTitle;
+
+                    // A rename in the session list flows into the open window:
+                    // caption and generated-title suppression follow the new name.
+                    System.ComponentModel.PropertyChangedEventHandler onSessionChanged = (_, e) =>
+                    {
+                        if (e.PropertyName != nameof(SessionInfo.Name)) return;
+                        if (viewModel.SessionTitle == session.Name) return;
+
+                        viewModel.HasCustomTitle = session.HasCustomTitle;
+                        viewModel.SessionTitle = session.Name;
+                    };
+                    session.PropertyChanged += onSessionChanged;
 
                     // Sync generated title back to session list (plain title)
                     // and window caption (animated DisplayTitle with activity
@@ -352,6 +451,7 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                     chatWindow.Closed += () =>
                     {
                         _instance?._sessionWindowMap.Remove(session.Id);
+                        session.PropertyChanged -= onSessionChanged;
                         session.IsActive = false;
                         viewModel.Dispose();
                     };
@@ -476,7 +576,7 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
     int IVsSolutionEvents.OnBeforeUnloadProject(IVsHierarchy pRealHierarchy, IVsHierarchy pStubHierarchy) => Microsoft.VisualStudio.VSConstants.S_OK;
     int IVsSolutionEvents.OnQueryCloseSolution(object pUnkReserved, ref int pfCancel) => Microsoft.VisualStudio.VSConstants.S_OK;
 
-    private void OnFileOpenRequested(string rawPath)
+    private void OnFileLinkRequested(string rawPath, FileLinkAction action)
     {
         _ = JoinableTaskFactory.RunAsync(async () =>
         {
@@ -487,6 +587,13 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
             var lineMatch = Regex.Match(rawPath, @":(\d+)(?:-\d+)?$");
             var filePath = lineMatch.Success ? rawPath.Substring(0, lineMatch.Index) : rawPath;
 
+            // A markdown link can carry a file URI or percent-encoded characters
+            if (filePath.StartsWith("file:", StringComparison.OrdinalIgnoreCase)
+                && Uri.TryCreate(filePath, UriKind.Absolute, out var fileUri))
+                filePath = fileUri.LocalPath;
+            else
+                filePath = Uri.UnescapeDataString(filePath);
+
             // Convert MSYS/Git-Bash style paths ("/c/foo/bar") to Windows form ("c:\foo\bar")
             var msysMatch = Regex.Match(filePath, @"^/([A-Za-z])/");
             if (msysMatch.Success)
@@ -495,15 +602,12 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
             // Normalize forward slashes
             filePath = filePath.Replace('/', '\\');
 
-            // Resolve relative paths against the solution directory
-            if (!Path.IsPathRooted(filePath) && _solutionDirectory is not null)
+            var resolved = ResolveLinkedPath(filePath);
+            if (resolved is null)
             {
-                filePath = Path.GetFullPath(Path.Combine(_solutionDirectory, filePath));
-            }
-
-            if (!File.Exists(filePath))
-            {
-                System.Diagnostics.Debug.WriteLine($"VsAgentic: File not found: {filePath}");
+                // Say so where the user can see it. A click that does nothing
+                // looks like a broken link rather than a missing file.
+                SetStatusBarText($"VsAgentic: File not found: {filePath}");
                 return;
             }
 
@@ -512,25 +616,109 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
 
             try
             {
-                VsShellUtilities.OpenDocument(this, filePath, Guid.Empty,
-                    out _, out _, out IVsWindowFrame? frame);
-                frame?.Show();
-
-                if (line > 0 && frame is not null)
+                switch (action)
                 {
-                    // Navigate to the specific line
-                    if (VsShellUtilities.GetTextView(frame) is var textView && textView is not null)
-                    {
-                        textView.SetCaretPos(line - 1, 0);
-                        textView.CenterLines(line - 1, 1);
-                    }
+                    case FileLinkAction.Open when Directory.Exists(resolved):
+                        System.Diagnostics.Process.Start("explorer.exe", $"\"{resolved}\"");
+                        break;
+
+                    case FileLinkAction.Open:
+                        OpenDocumentAtLine(resolved, line);
+                        break;
+
+                    case FileLinkAction.CopyPath:
+                        Clipboard.SetText(resolved);
+                        SetStatusBarText($"VsAgentic: Copied {resolved}");
+                        break;
+
+                    case FileLinkAction.ShowInExplorer:
+                        System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{resolved}\"");
+                        break;
                 }
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"VsAgentic: Failed to open file: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"VsAgentic: File link action {action} failed for {resolved}: {ex.Message}");
+                SetStatusBarText($"VsAgentic: {action} failed for {resolved}");
             }
         });
+    }
+
+    /// <summary>
+    /// Finds the file or folder a link in the chat points at, or null if there
+    /// is none. The CLI runs in the solution directory, but the model often
+    /// writes a path relative to the repository root, which can sit above it
+    /// (a solution kept in src\, say). So a relative path is also tried against
+    /// each parent up to the repository root. Outside a repository only the
+    /// solution directory counts: further up, a match would be a coincidence.
+    /// </summary>
+    private string? ResolveLinkedPath(string path)
+    {
+        try
+        {
+            if (Path.IsPathRooted(path))
+                return PathExists(path) ? Path.GetFullPath(path) : null;
+
+            if (_solutionDirectory is null) return null;
+
+            var start = new DirectoryInfo(_solutionDirectory);
+            var stop = FindRepositoryRoot(start) ?? start;
+            for (var dir = start; dir is not null; dir = dir.Parent)
+            {
+                var candidate = Path.GetFullPath(Path.Combine(dir.FullName, path));
+                if (PathExists(candidate)) return candidate;
+                if (SameDirectory(dir, stop)) break;
+            }
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException)
+        {
+            // Not a valid path at all, e.g. a link the regex took for one
+        }
+        return null;
+    }
+
+    private static bool PathExists(string path) => File.Exists(path) || Directory.Exists(path);
+
+    private static DirectoryInfo? FindRepositoryRoot(DirectoryInfo start)
+    {
+        for (var dir = start; dir is not null; dir = dir.Parent)
+        {
+            // .git is a file, not a folder, in a worktree or a submodule
+            if (PathExists(Path.Combine(dir.FullName, ".git"))) return dir;
+        }
+        return null;
+    }
+
+    private static bool SameDirectory(DirectoryInfo a, DirectoryInfo b) =>
+        string.Equals(
+            a.FullName.TrimEnd(Path.DirectorySeparatorChar),
+            b.FullName.TrimEnd(Path.DirectorySeparatorChar),
+            StringComparison.OrdinalIgnoreCase);
+
+    private void OpenDocumentAtLine(string filePath, int line)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+
+        VsShellUtilities.OpenDocument(this, filePath, Guid.Empty,
+            out _, out _, out IVsWindowFrame? frame);
+        frame?.Show();
+
+        if (line > 0 && frame is not null)
+        {
+            // Navigate to the specific line
+            if (VsShellUtilities.GetTextView(frame) is var textView && textView is not null)
+            {
+                textView.SetCaretPos(line - 1, 0);
+                textView.CenterLines(line - 1, 1);
+            }
+        }
+    }
+
+    private void SetStatusBarText(string text)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        if (GetService(typeof(SVsStatusbar)) is IVsStatusbar statusBar)
+            statusBar.SetText(text);
     }
 
     protected override void Dispose(bool disposing)
@@ -538,7 +726,22 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         ThreadHelper.ThrowIfNotOnUIThread();
         if (disposing)
         {
-            ChatWebView.FileOpenRequested -= OnFileOpenRequested;
+            ChatWebView.FileLinkRequested -= OnFileLinkRequested;
+
+            if (_persistZoom is not null)
+            {
+                ChatZoom.Changed -= _persistZoom;
+                _persistZoom = null;
+            }
+
+            // A zoom step in the last half-second still has its write pending;
+            // flush it rather than lose it on the way out.
+            if (_zoomSaveTimer is { IsEnabled: true }
+                && GetDialogPage(typeof(VsAgenticOptionsPage)) is VsAgenticOptionsPage optionsPage)
+            {
+                SaveZoomSetting(optionsPage);
+            }
+            _zoomSaveTimer?.Stop();
 
             if (_solutionEventsCookie != 0)
             {

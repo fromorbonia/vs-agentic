@@ -131,17 +131,19 @@
             </Setter>
         </Style>
 
-        <!-- Delete button: transparent pill, shown on row hover, overlaid above text -->
-        <Style x:Key="DeleteButtonStyle" TargetType="Button">
+        <!-- Row action button (rename, delete): transparent pill, shown on row
+             hover, overlaid above the text. Visibility is driven by the row
+             action strip, not by the button itself. -->
+        <Style x:Key="RowActionButtonStyle" TargetType="Button">
             <Setter Property="Background" Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarMouseOverBackgroundGradientKey}}" />
             <Setter Property="BorderThickness" Value="0" />
             <Setter Property="Padding" Value="4,2" />
-            <Setter Property="Margin" Value="0" />
+            <Setter Property="Margin" Value="2,0,0,0" />
             <Setter Property="VerticalAlignment" Value="Center" />
-            <Setter Property="HorizontalAlignment" Value="Right" />
             <Setter Property="Cursor" Value="Hand" />
-            <Setter Property="Visibility" Value="Hidden" />
-            <Setter Property="ToolTip" Value="Delete session" />
+            <!-- Clicking an action selects the row; that must not also open the
+                 session window. -->
+            <EventSetter Event="PreviewMouseLeftButtonDown" Handler="RowAction_PreviewMouseLeftButtonDown" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
@@ -166,6 +168,28 @@
                 </Trigger>
             </Style.Triggers>
         </Style>
+
+        <!-- WPF menus don't pick up the VS theme on their own, so the shell
+             brushes are applied by hand. -->
+        <Style x:Key="SessionMenuStyle" TargetType="ContextMenu">
+            <Setter Property="Background" Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarMenuBackgroundGradientKey}}" />
+            <Setter Property="Foreground" Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarTextActiveKey}}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarMenuBorderKey}}" />
+            <Setter Property="BorderThickness" Value="1" />
+        </Style>
+
+        <Style x:Key="SessionMenuItemStyle" TargetType="MenuItem">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarTextActiveKey}}" />
+            <Setter Property="Padding" Value="6,4" />
+            <Style.Triggers>
+                <Trigger Property="IsHighlighted" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarMouseOverBackgroundGradientKey}}" />
+                    <Setter Property="Foreground" Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarTextHoverKey}}" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
     </UserControl.Resources>
 
     <Grid Background="{DynamicResource {x:Static vs:VsBrushes.ToolWindowBackgroundKey}}">
@@ -219,15 +243,63 @@
                  SelectedItem="{Binding SelectedSession}"
                  SelectionChanged="ListBox_SelectionChanged"
                  MouseDoubleClick="ListBox_MouseDoubleClick"
+                 PreviewMouseLeftButtonUp="ListBox_PreviewMouseLeftButtonUp"
+                 PreviewKeyDown="ListBox_PreviewKeyDown"
                  ItemContainerStyle="{StaticResource FluentListBoxItemStyle}"
                  Margin="4,0,4,4">
             <ListBox.ItemTemplate>
                 <DataTemplate>
-                    <Grid Cursor="Hand" Margin="6,4">
+                    <!-- Tag carries the list view model so the context menu,
+                         which lives outside the visual tree, can reach its
+                         commands. -->
+                    <Grid Cursor="Hand" Margin="6,4"
+                          Tag="{Binding DataContext, RelativeSource={RelativeSource AncestorType=ListBox}}">
+                        <!-- One menu per row, reached by right-clicking the row
+                             or by the "..." button. The menu sits outside the
+                             visual tree, so its items go through
+                             PlacementTarget: .Tag is the list view model,
+                             .DataContext the row's session. Both the row and
+                             the button carry that Tag. -->
+                        <Grid.ContextMenu>
+                            <ContextMenu Style="{StaticResource SessionMenuStyle}">
+                                <MenuItem Header="Rename"
+                                          Style="{StaticResource SessionMenuItemStyle}"
+                                          Command="{Binding PlacementTarget.Tag.BeginRenameCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                          CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}">
+                                    <MenuItem.Icon>
+                                        <imaging:CrispImage Width="16" Height="16" Moniker="{x:Static catalog:KnownMonikers.Rename}" />
+                                    </MenuItem.Icon>
+                                </MenuItem>
+                                <MenuItem Header="Delete"
+                                          Style="{StaticResource SessionMenuItemStyle}"
+                                          Command="{Binding PlacementTarget.Tag.RemoveSessionCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                          CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}">
+                                    <MenuItem.Icon>
+                                        <imaging:CrispImage Width="16" Height="16" Moniker="{x:Static catalog:KnownMonikers.Trash}" />
+                                    </MenuItem.Icon>
+                                </MenuItem>
+                            </ContextMenu>
+                        </Grid.ContextMenu>
+
                         <StackPanel>
-                            <TextBlock Text="{Binding Name, Mode=OneWay}"
-                                       FontWeight="SemiBold" FontSize="13"
-                                       TextTrimming="CharacterEllipsis" />
+                            <Grid>
+                                <TextBlock x:Name="NameText"
+                                           Text="{Binding Name, Mode=OneWay}"
+                                           FontWeight="SemiBold" FontSize="13"
+                                           TextTrimming="CharacterEllipsis" />
+                                <TextBox x:Name="RenameBox"
+                                         Visibility="Collapsed"
+                                         Style="{StaticResource FluentTextBoxStyle}"
+                                         Text="{Binding EditingName, UpdateSourceTrigger=PropertyChanged}"
+                                         FontWeight="SemiBold" FontSize="13"
+                                         Padding="3,1"
+                                         Background="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBackgroundKey}}"
+                                         Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"
+                                         BorderBrush="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"
+                                         IsVisibleChanged="RenameBox_IsVisibleChanged"
+                                         KeyDown="RenameBox_KeyDown"
+                                         LostKeyboardFocus="RenameBox_LostKeyboardFocus" />
+                            </Grid>
                             <TextBlock FontSize="11" Opacity="0.7"
                                        TextTrimming="CharacterEllipsis">
                                 <Run Text="Last activity " />
@@ -235,17 +307,57 @@
                             </TextBlock>
                         </StackPanel>
 
-                        <Button x:Name="DeleteButton"
-                                Style="{StaticResource DeleteButtonStyle}"
-                                Command="{Binding DataContext.RemoveSessionCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
-                                CommandParameter="{Binding}">
-                            <imaging:CrispImage Width="16" Height="16"
-                                                Moniker="{x:Static catalog:KnownMonikers.Trash}" />
-                        </Button>
+                        <!-- Quiet marker so a pinned row reads as pinned while
+                             the action strip is hidden. -->
+                        <imaging:CrispImage x:Name="PinIndicator"
+                                            Width="12" Height="12"
+                                            Opacity="0.7"
+                                            Visibility="Collapsed"
+                                            HorizontalAlignment="Right"
+                                            VerticalAlignment="Center"
+                                            Margin="0,0,4,0"
+                                            Moniker="{x:Static catalog:KnownMonikers.Pin}"
+                                            IsHitTestVisible="False" />
+
+                        <StackPanel x:Name="RowActions"
+                                    Orientation="Horizontal"
+                                    HorizontalAlignment="Right"
+                                    VerticalAlignment="Center"
+                                    Visibility="Hidden">
+                            <Button x:Name="PinButton"
+                                    Style="{StaticResource RowActionButtonStyle}"
+                                    ToolTip="Pin to top"
+                                    Command="{Binding DataContext.TogglePinCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
+                                    CommandParameter="{Binding}">
+                                <imaging:CrispImage x:Name="PinIcon" Width="16" Height="16"
+                                                    Moniker="{x:Static catalog:KnownMonikers.Pin}" />
+                            </Button>
+                            <Button Style="{StaticResource RowActionButtonStyle}"
+                                    ToolTip="More options"
+                                    Tag="{Binding DataContext, RelativeSource={RelativeSource AncestorType=ListBox}}"
+                                    Click="RowMenuButton_Click">
+                                <imaging:CrispImage Width="16" Height="16"
+                                                    Moniker="{x:Static catalog:KnownMonikers.Ellipsis}" />
+                            </Button>
+                        </StackPanel>
                     </Grid>
+                    <!-- Order matters: later triggers win where they overlap,
+                         so hover hides the pin marker and renaming hides both. -->
                     <DataTemplate.Triggers>
+                        <DataTrigger Binding="{Binding IsPinned}" Value="True">
+                            <Setter TargetName="PinIndicator" Property="Visibility" Value="Visible" />
+                            <Setter TargetName="PinIcon" Property="Moniker" Value="{x:Static catalog:KnownMonikers.Unpin}" />
+                            <Setter TargetName="PinButton" Property="ToolTip" Value="Unpin" />
+                        </DataTrigger>
                         <DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
-                            <Setter TargetName="DeleteButton" Property="Visibility" Value="Visible" />
+                            <Setter TargetName="RowActions" Property="Visibility" Value="Visible" />
+                            <Setter TargetName="PinIndicator" Property="Visibility" Value="Collapsed" />
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding IsRenaming}" Value="True">
+                            <Setter TargetName="NameText" Property="Visibility" Value="Collapsed" />
+                            <Setter TargetName="RenameBox" Property="Visibility" Value="Visible" />
+                            <Setter TargetName="RowActions" Property="Visibility" Value="Collapsed" />
+                            <Setter TargetName="PinIndicator" Property="Visibility" Value="Collapsed" />
                         </DataTrigger>
                     </DataTemplate.Triggers>
                 </DataTemplate>

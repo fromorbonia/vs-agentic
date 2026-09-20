@@ -23,6 +23,9 @@ Settings are available in the Visual Studio **Tools → Options → VsAgentic** 
 
 - **Claude CLI Path** — path to the `claude` executable (defaults to `claude` on PATH)
 - **CLI Permission Mode** — controls how the CLI handles tool permissions
+- **Model** / **Reasoning effort** — remembered from the dropdowns under the chat input
+- **Plan** — which subscription the 5h / 7d readings are sized against (`Unlimited` hides them)
+- **5-hour / weekly token budget** — override the estimated limits behind those readings
 
 ### 🧰 Built-in Agentic Tools
 Claude Code comes with a full suite of agentic tools — file search, code search, file reading/editing, bash commands, web fetching, and sub-agent delegation. The CLI manages all tools natively; VsAgentic displays tool steps inline so you can follow every action.
@@ -32,6 +35,18 @@ Claude Code comes with a full suite of agentic tools — file search, code searc
 - Conversation history is fully restored when you reopen VS
 - Auto-generated session titles based on your first message
 - Manage sessions from the **VsAgentic Sessions** panel (open, rename, delete)
+
+### 📊 Usage in the Status Bar
+The status bar under the chat input shows where your tokens are going:
+
+- **Context** — how full the model's context window is, so a compaction is never a surprise
+- **5h / 7d** — tokens spent in the trailing rate-limit windows, counted across every session on the machine and kept between restarts
+- **Session** — what this conversation has cost so far, broken down by input, output and cache in the tooltip
+- **Model / effort** dropdowns — switch either without leaving the chat; the conversation is resumed, not lost. Effort `Default` sends no level to the CLI
+
+In a narrow pane the readings drop out one by one; the context reading stays longest.
+
+The rate-limit budgets are estimates — Anthropic does not publish the real limits — so the 5h / 7d readings are a gauge, not an authority. Adjust them under **Tools → Options → VsAgentic** if you have measured your own.
 
 ### 🖼️ Rich Markdown Rendering
 Responses are rendered with full Markdown support — syntax-highlighted code blocks, tables, lists, and inline formatting — via an embedded WebView2 control.
@@ -59,7 +74,7 @@ Responses are rendered with full Markdown support — syntax-highlighted code bl
 3. Or, open Visual Studio 2026, go to **Extensions → Manage Extensions**, search for **VsAgentic**, click **Download** and restart Visual Studio
 
 ### Option 2 — Manual VSIX install
-1. Download the latest `.vsix` file from the [Releases](../../releases) page
+1. Download the latest `.vsix` file from the [Releases](https://github.com/adospace/vs-agentic/releases) page
 2. Double-click the `.vsix` file to launch the VSIX Installer
 3. Follow the prompts and restart Visual Studio
 
@@ -149,7 +164,6 @@ VsAgentic.sln
 ├── VsAgentic.VSExtension/   # VSIX entry point — commands, tool windows, package bootstrap
 ├── VsAgentic.UI/            # Shared WPF controls, ViewModels, Markdown renderer (WebView2)
 ├── VsAgentic.Services/      # Core service layer — CLI integration, session store
-├── VsAgentic.Desktop/       # Standalone WPF desktop app (for development & testing)
 └── VsAgentic.Console/       # Console host (for development & testing)
 ```
 
@@ -174,8 +188,8 @@ VsAgentic.sln
 
 Your feedback makes VsAgentic better! Here's how to get involved:
 
-- 🐛 **Found a bug?** [Open an issue](../../issues/new?template=bug_report.md)
-- 💡 **Have a feature idea?** [Start a discussion](../../discussions/new?category=ideas)
+- 🐛 **Found a bug?** [Open an issue](https://github.com/adospace/vs-agentic/issues/new)
+- 💡 **Have a feature idea?** [Open an issue](https://github.com/adospace/vs-agentic/issues/new) and describe it
 - ⭐ **Enjoying the extension?** A star on GitHub goes a long way — thank you!
 - 🗳️ **Marketplace review** — Leaving a review on the Visual Studio Marketplace helps other developers discover VsAgentic.
 

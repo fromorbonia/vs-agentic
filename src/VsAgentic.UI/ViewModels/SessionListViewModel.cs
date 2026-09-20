@@ -60,6 +60,32 @@ public partial class SessionInfo : ObservableObject
     private bool _isActive;
 
     /// <summary>
+    /// Pinned sessions stay at the top of the list.
+    /// </summary>
+    [ObservableProperty]
+    private bool _isPinned;
+
+    /// <summary>
+    /// True while the row shows its inline rename box. Only one session at a
+    /// time is in this state.
+    /// </summary>
+    [ObservableProperty]
+    private bool _isRenaming;
+
+    /// <summary>
+    /// Scratch buffer for the rename box, so cancelling leaves
+    /// <see cref="Name"/> untouched.
+    /// </summary>
+    [ObservableProperty]
+    private string _editingName = string.Empty;
+
+    /// <summary>
+    /// True once the user renamed this session by hand; mirrors
+    /// <see cref="SessionEntry.TitleIsCustom"/>.
+    /// </summary>
+    public bool HasCustomTitle { get; set; }
+
+    /// <summary>
     /// Cumulative USD cost for this session. Null until the first message is sent.
     /// </summary>
     [ObservableProperty]
@@ -125,12 +151,16 @@ public partial class SessionListViewModel : ObservableObject
         var entries = await _sessionStore.GetSessionIndexAsync(_folderPath);
         Sessions.Clear();
 
-        foreach (var entry in entries.OrderByDescending(e => e.LastActivityUtc))
+        foreach (var entry in entries
+                     .OrderByDescending(e => e.IsPinned)
+                     .ThenByDescending(e => e.LastActivityUtc))
         {
             var info = new SessionInfo
             {
                 PersistedId = entry.Id,
                 Name = entry.Title,
+                HasCustomTitle = entry.TitleIsCustom,
+                IsPinned = entry.IsPinned,
                 LastActivity = entry.LastActivityUtc.ToLocalTime(),
                 IsActive = false
             };
@@ -158,9 +188,54 @@ public partial class SessionListViewModel : ObservableObject
             catch { /* best effort — session works in-memory even if persistence fails */ }
         }
 
-        Sessions.Insert(0, session);
+        // Newest first, but below whatever the user pinned.
+        Sessions.Insert(Sessions.TakeWhile(s => s.IsPinned).Count(), session);
         SelectedSession = session;
         SessionOpenRequested?.Invoke(session);
+    }
+
+    /// <summary>
+    /// Pins or unpins a session and moves it to its place in the list.
+    /// </summary>
+    [RelayCommand]
+    private async Task TogglePinAsync(SessionInfo? session)
+    {
+        if (session is null) return;
+
+        session.IsPinned = !session.IsPinned;
+        ApplyPinnedOrder();
+
+        if (session.PersistedId.HasValue && _sessionStore is not null && _folderPath is not null)
+        {
+            try
+            {
+                var index = await _sessionStore.GetSessionIndexAsync(_folderPath);
+                var entry = index.FirstOrDefault(e => e.Id == session.PersistedId.Value);
+                if (entry is not null)
+                {
+                    entry.IsPinned = session.IsPinned;
+                    await _sessionStore.UpdateSessionAsync(_folderPath, entry);
+                }
+            }
+            catch { /* best effort — the order still holds for this session */ }
+        }
+    }
+
+    /// <summary>
+    /// Moves pinned sessions to the top. OrderBy is stable, so the relative
+    /// order inside each group survives — pinning and unpinning only ever
+    /// moves the one row across the boundary.
+    /// </summary>
+    private void ApplyPinnedOrder()
+    {
+        var ordered = Sessions.OrderByDescending(s => s.IsPinned).ToList();
+
+        for (var target = 0; target < ordered.Count; target++)
+        {
+            var current = Sessions.IndexOf(ordered[target]);
+            if (current != target)
+                Sessions.Move(current, target);
+        }
     }
 
     [RelayCommand]
@@ -169,6 +244,77 @@ public partial class SessionListViewModel : ObservableObject
         if (session is null) return;
         SelectedSession = session;
         SessionOpenRequested?.Invoke(session);
+    }
+
+    /// <summary>
+    /// Puts a row into inline rename mode. Any other row being renamed is
+    /// closed first, so only one rename box is ever open.
+    /// </summary>
+    [RelayCommand]
+    private void BeginRename(SessionInfo? session)
+    {
+        if (session is null) return;
+
+        foreach (var other in Sessions)
+        {
+            if (!ReferenceEquals(other, session))
+                other.IsRenaming = false;
+        }
+
+        session.EditingName = session.Name;
+        session.IsRenaming = true;
+    }
+
+    [RelayCommand]
+    private void CancelRename(SessionInfo? session)
+    {
+        if (session is null) return;
+        session.IsRenaming = false;
+        session.EditingName = session.Name;
+    }
+
+    /// <summary>
+    /// Applies the typed name and persists it. A blank or unchanged name is
+    /// treated as a cancel.
+    /// </summary>
+    [RelayCommand]
+    private async Task CommitRenameAsync(SessionInfo? session)
+    {
+        if (session is null || !session.IsRenaming) return;
+
+        session.IsRenaming = false;
+
+        var newName = session.EditingName?.Trim() ?? string.Empty;
+        if (newName.Length == 0 || newName == session.Name)
+        {
+            session.EditingName = session.Name;
+            return;
+        }
+
+        session.Name = newName;
+        session.HasCustomTitle = true;
+
+        // The name is part of the filter predicate, so a rename can move the
+        // row in or out of the current search results.
+        FilteredSessions.Refresh();
+
+        if (session.PersistedId.HasValue && _sessionStore is not null && _folderPath is not null)
+        {
+            try
+            {
+                var index = await _sessionStore.GetSessionIndexAsync(_folderPath);
+                var entry = index.FirstOrDefault(e => e.Id == session.PersistedId.Value);
+                if (entry is not null)
+                {
+                    // Leave LastActivityUtc alone — renaming is not activity and
+                    // must not reorder the list.
+                    entry.Title = newName;
+                    entry.TitleIsCustom = true;
+                    await _sessionStore.UpdateSessionAsync(_folderPath, entry);
+                }
+            }
+            catch { /* best effort — the new name still shows in this session */ }
+        }
     }
 
     [RelayCommand]

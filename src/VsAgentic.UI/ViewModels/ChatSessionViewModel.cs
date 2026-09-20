@@ -38,6 +38,13 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private string _sessionTitle = "New Session";
 
+    /// <summary>
+    /// True when <see cref="SessionTitle"/> was typed by the user in the
+    /// session list. The title generated from the first message is then
+    /// skipped so the manual name survives.
+    /// </summary>
+    public bool HasCustomTitle { get; set; }
+
     // Realtime activity indicator: a braille spinner prefix while the AI is
     // working, a steady "? " prefix while awaiting user input (permission /
     // question banner), and no prefix while idle. Host bindings (e.g. the VS
@@ -174,6 +181,8 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             _questionBroker.QuestionRequested += OnQuestionBrokerRequested;
 
         chatService.LoginRequired += OnChatServiceLoginRequired;
+
+        InitializeUsage(chatService, options.Value);
     }
 
     private void OnChatServiceLoginRequired(string? errorMessage)
@@ -332,6 +341,10 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             if (historyJson is not null && _chatService is not null)
             {
                 _chatService.RestoreHistory(historyJson);
+
+                // The CLI session id is only known now, so a model preview taken
+                // at construction may have answered for a new session.
+                RefreshModelPreview();
             }
         }
         catch
@@ -392,9 +405,10 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             return;
         }
 
-        // Generate a title from the first user message (fire-and-forget, non-blocking)
+        // Generate a title from the first user message (fire-and-forget, non-blocking).
+        // Skipped when the user already named the session by hand.
         var isFirstMessage = Items.Count(i => i.Type == ChatItemType.User) == 1;
-        if (isFirstMessage)
+        if (isFirstMessage && !HasCustomTitle)
         {
             _ = Task.Run(async () =>
             {
@@ -403,6 +417,10 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                     var title = await _chatService.GenerateTitleAsync(message);
                     Dispatch(() =>
                     {
+                        // The user may have renamed the session while the
+                        // title was being generated.
+                        if (HasCustomTitle) return;
+
                         SessionTitle = title;
                         PersistTitleUpdateFireAndForget(title);
                     });
@@ -708,6 +726,15 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     public void Dispose()
     {
         try { _activityTimer?.Stop(); } catch { }
+        try
+        {
+            if (_chatService is not null)
+            {
+                _chatService.UsageChanged -= OnChatServiceUsageChanged;
+                _chatService.ModelChanged -= OnChatServiceModelChanged;
+            }
+        }
+        catch { }
         try { (_chatService as IDisposable)?.Dispose(); } catch { }
         try { _serviceScope?.Dispose(); } catch { }
     }
