@@ -46,14 +46,24 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     public bool HasCustomTitle { get; set; }
 
     // Realtime activity indicator: a braille spinner prefix while the AI is
-    // working, a steady "? " prefix while awaiting user input (permission /
+    // working, a waving hand while awaiting user input (permission /
     // question banner), and no prefix while idle. Host bindings (e.g. the VS
     // tool window caption) should use DisplayTitle; SessionTitle stays plain
     // for the session list entry so the sidebar doesn't flicker.
     private static readonly string SpinnerFrames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
-    private const string AwaitingPrefix = "? ";
+    // Two hand glyphs rather than a hand alternating with blank: the caption is
+    // a plain string with no way to hide a glyph, so anything but an equal-width
+    // pair shifts the title text on every frame. The trailing U+FE0F on the
+    // raised hand forces emoji presentation — its text-presentation fallback is
+    // narrower, which would reintroduce the shift.
+    private static readonly string[] AwaitingFrames = { "👋 ", "✋️ " };
+    // The timer runs at spinner speed, which would strobe the hand, so the hand
+    // advances only every Nth tick (~0.5s). The tick counter wraps at the LCM of
+    // both cycles (10 spinner frames, 2 x 4 hand ticks) so neither jumps on rollover.
+    private const int AwaitingTicksPerFrame = 4;
+    private const int AnimationTickCycle = 40;
     private int _pendingUserPrompts;
-    private int _spinnerFrame;
+    private int _animationTick;
     private System.Windows.Threading.DispatcherTimer? _activityTimer;
 
     [ObservableProperty]
@@ -70,7 +80,11 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
 
     private void UpdateActivityIndicator()
     {
-        if (Activity == SessionActivity.Busy)
+        // Activity is computed, so it has to be notified by hand for the
+        // status-bar triggers in ChatSessionControl.xaml to see the change.
+        OnPropertyChanged(nameof(Activity));
+
+        if (Activity is SessionActivity.Busy or SessionActivity.AwaitingUser)
         {
             EnsureActivityTimer();
             if (!_activityTimer!.IsEnabled) _activityTimer.Start();
@@ -78,6 +92,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         else
         {
             _activityTimer?.Stop();
+            _animationTick = 0;
         }
         UpdateDisplayTitle();
     }
@@ -94,7 +109,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         };
         _activityTimer.Tick += (_, _) =>
         {
-            _spinnerFrame = (_spinnerFrame + 1) % SpinnerFrames.Length;
+            _animationTick = (_animationTick + 1) % AnimationTickCycle;
             UpdateDisplayTitle();
         };
     }
@@ -103,8 +118,9 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     {
         var prefix = Activity switch
         {
-            SessionActivity.Busy => SpinnerFrames[_spinnerFrame] + " ",
-            SessionActivity.AwaitingUser => AwaitingPrefix,
+            SessionActivity.Busy => SpinnerFrames[_animationTick % SpinnerFrames.Length] + " ",
+            SessionActivity.AwaitingUser =>
+                AwaitingFrames[(_animationTick / AwaitingTicksPerFrame) % AwaitingFrames.Length],
             _ => ""
         };
         DisplayTitle = prefix + SessionTitle;

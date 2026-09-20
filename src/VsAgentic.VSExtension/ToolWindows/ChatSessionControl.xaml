@@ -15,6 +15,17 @@
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
         <controls:MinWidthVisibilityConverter x:Key="MinWidth"/>
 
+        <!-- Flashes the status bar background while waiting for input. To-only
+             animation with AutoReverse, so the themed base colour never has to
+             be restated here: it animates from whatever the brush currently is
+             and back. Keyframes can't carry a DynamicResource anyway (a
+             Storyboard is a Freezable), and VsBrushes keys resolve to a Brush,
+             not the Color a colour keyframe needs. -->
+        <Storyboard x:Key="FlashStoryboard" RepeatBehavior="Forever" AutoReverse="True">
+            <ColorAnimation Storyboard.TargetProperty="Background.Color"
+                            To="#66808080" Duration="0:0:0.75"/>
+        </Storyboard>
+
         <!-- Status bar pickers. Fully retemplated rather than merely unbordered:
              the stock ComboBox chrome draws its own border, background and
              focus ring, none of which BorderThickness="0" removes. What is left
@@ -373,6 +384,25 @@
                         <Border Grid.Row="1"
                                 BorderBrush="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"
                                 BorderThickness="0,1,0,0">
+                            <!-- A local brush, not the shared VsBrushes one: the themed
+                                 brushes are frozen and can't be animated. -->
+                            <Border.Background>
+                                <SolidColorBrush Color="{DynamicResource {x:Static vs:VsColors.ComboBoxBackgroundKey}}"/>
+                            </Border.Background>
+                            <Border.Style>
+                                <Style TargetType="Border">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Activity}" Value="AwaitingUser">
+                                            <DataTrigger.EnterActions>
+                                                <BeginStoryboard x:Name="FlashBegin" Storyboard="{StaticResource FlashStoryboard}"/>
+                                            </DataTrigger.EnterActions>
+                                            <DataTrigger.ExitActions>
+                                                <StopStoryboard BeginStoryboardName="FlashBegin"/>
+                                            </DataTrigger.ExitActions>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Style>
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto"/>
@@ -510,15 +540,39 @@
             </Grid>
         </Border>
 
-        <!-- Busy indicator -->
+        <!-- Status indicator: "Thinking..." while the turn runs, "Waiting for
+             input…" while a permission / question banner needs an answer, and
+             hidden when idle. -->
         <Border DockPanel.Dock="Bottom"
                 LayoutTransform="{StaticResource ChromeZoom}"
                 Background="{DynamicResource {x:Static vs:VsBrushes.ToolWindowBackgroundKey}}"
-                Padding="16,4"
-                Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}">
-            <TextBlock Text="Thinking..."
-                       Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"
-                       FontSize="12" FontStyle="Italic"/>
+                Padding="16,4">
+            <Border.Style>
+                <Style TargetType="Border">
+                    <Setter Property="Visibility" Value="Collapsed"/>
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding Activity}" Value="Busy">
+                            <Setter Property="Visibility" Value="Visible"/>
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding Activity}" Value="AwaitingUser">
+                            <Setter Property="Visibility" Value="Visible"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Border.Style>
+            <TextBlock Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"
+                       FontSize="12" FontStyle="Italic">
+                <TextBlock.Style>
+                    <Style TargetType="TextBlock">
+                        <Setter Property="Text" Value="Thinking..."/>
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding Activity}" Value="AwaitingUser">
+                                <Setter Property="Text" Value="Waiting for input…"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBlock.Style>
+            </TextBlock>
         </Border>
 
         <!-- Banner host: permission / question / login banner. The DataTemplates
