@@ -85,7 +85,13 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         _outputListener = outputListener;
         _host = host;
         _logger = logger;
+
+        _host.StderrLine += OnHostStderrLine;
     }
+
+    // 1 once the untrusted-workspace warning has been reported for the running
+    // process. Reset when a new one is about to start.
+    private int _trustWarningRaised;
 
     /// <summary>
     /// Keeps an inherited <c>ANTHROPIC_API_KEY</c> out of a CLI we are about to
@@ -109,6 +115,20 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         string userMessage,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        // A session id whose transcript the CLI no longer holds is fatal to
+        // --resume: the process dies on startup before it reads the message.
+        // Checked only when a process has to be started, which is the only time
+        // the resume id is read at all.
+        RestartHostIfPending();
+
+        if (!_host.IsRunning)
+        {
+            // A fresh process re-evaluates workspace trust, so let it be
+            // reported again — the user may have just granted it.
+            Interlocked.Exchange(ref _trustWarningRaised, 0);
+            await DropResumeIdIfTranscriptIsGoneAsync().ConfigureAwait(false);
+        }
+
         // Lazy start: bring the long-running process up if it's not running.
         try
         {
@@ -172,6 +192,63 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         }
 
         ClearActiveTurn(turn);
+    }
+
+    /// <summary>
+    /// Detaches this chat from its CLI session when the CLI has no transcript for
+    /// it — most often because the transcript aged out of the CLI's own cleanup
+    /// window while the chat sat saved in the session list.
+    ///
+    /// The alternative is worse than losing the context: <c>--resume</c> with a
+    /// dead id kills the process at startup, and because the id stays on disk
+    /// every later message in this chat fails the same way.
+    /// </summary>
+    private async Task DropResumeIdIfTranscriptIsGoneAsync()
+    {
+        var sessionId = _cliSessionId;
+        if (string.IsNullOrEmpty(sessionId)) return;
+
+        // Walks the CLI's projects tree, so keep it off the sending thread.
+        var missing = await Task
+            .Run(() => ClaudeSessionTranscript.IsKnownMissing(sessionId, _logger))
+            .ConfigureAwait(false);
+        if (!missing) return;
+
+        _logger.LogWarning(
+            "[ClaudeCli] No transcript for session {SessionId}; starting a fresh session without --resume",
+            sessionId);
+        _cliSessionId = null;
+        EmitSessionLostNotice(sessionId!, willStartFresh: true);
+    }
+
+    /// <summary>
+    /// Tells the user, in the chat itself, that the conversation they are looking
+    /// at is no longer the one Claude can see.
+    /// </summary>
+    private void EmitSessionLostNotice(string sessionId, bool willStartFresh)
+    {
+        var shortId = sessionId.Length > 8 ? sessionId.Substring(0, 8) : sessionId;
+        var body = new StringBuilder();
+        body.Append("The Claude CLI has no record of this chat's session (`");
+        body.Append(shortId);
+        body.Append("…`). Its transcript was deleted, or it aged out of the CLI's own ");
+        body.Append("cleanup window — transcripts live under `~/.claude/projects` and are ");
+        body.Append("pruned after `cleanupPeriodDays` (30 by default).\n\n");
+        body.Append("The messages above stay in this window, but Claude cannot see them: ");
+        body.Append(willStartFresh
+            ? "this message starts a fresh session, so treat it as the first one."
+            : "this chat has been detached from the dead session — send your message again to start a fresh one.");
+
+        var item = new OutputItem
+        {
+            Id = Guid.NewGuid().ToString("N"),
+            ToolName = "ClaudeCli",
+            Title = "Previous session unavailable",
+            Status = OutputItemStatus.Info,
+            Body = body.ToString()
+        };
+        _outputListener.OnStepStarted(item);
+        _outputListener.OnStepCompleted(item);
     }
 
     private void ClearActiveTurn(TurnState turn)
@@ -453,17 +530,45 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         if (isError)
         {
             var resultText = evt.TryGetProperty("result", out var rp) ? rp.GetString() : null;
-            _logger.LogWarning("[ClaudeCli] CLI returned error result: {Result}", resultText);
+
+            // A failure raised before the turn begins carries no result string at
+            // all — the reason is in an "errors" array instead. Verified against
+            // the CLI by resuming a deleted session:
+            //   {"type":"result","subtype":"error_during_execution",…,
+            //    "errors":["No conversation found with session ID: …"]}
+            // Reading only "result" is what turned that into "Unknown CLI error".
+            var errorsText = ExtractResultErrors(evt);
+            var detail = FirstNonBlank(resultText, errorsText);
+
+            // Last resort for a failure the CLI names nowhere in the event: its
+            // own stderr, which is the only place some startup problems appear.
+            var stderrText = detail is null ? _host.DrainRecentStderr() : null;
+            var diagnosis = FirstNonBlank(detail, stderrText);
+            _logger.LogWarning(
+                "[ClaudeCli] CLI returned error result: {Result} (errors: {Errors}; stderr: {Stderr})",
+                resultText ?? "(null)", errorsText ?? "(none)", stderrText ?? "(none)");
 
             // Surface authentication failures via the LoginRequired event
             // (rendered as a banner) instead of the in-chat error step. The
             // patterns below are taken from Anthropic's published error
             // reference at https://code.claude.com/docs/en/errors and are part
             // of their public contract.
-            if (LooksLikeAuthError(resultText))
+            if (LooksLikeAuthError(diagnosis))
             {
-                try { LoginRequired?.Invoke(resultText); }
+                try { LoginRequired?.Invoke(diagnosis); }
                 catch (Exception ex) { _logger.LogError(ex, "[ClaudeCli] LoginRequired handler threw"); }
+            }
+            else if (LooksLikeMissingSessionError(diagnosis))
+            {
+                // The preflight in SendMessageAsync catches the common form of
+                // this, so reaching here means the transcript exists but the CLI
+                // still refused it — a transcript belonging to another working
+                // directory, say. Either way the id is dead: drop it so the next
+                // message is not a third failure.
+                var deadSessionId = _cliSessionId;
+                _cliSessionId = null;
+                _logger.LogWarning("[ClaudeCli] CLI rejected --resume for session {SessionId}; session detached", deadSessionId);
+                EmitSessionLostNotice(deadSessionId ?? "unknown", willStartFresh: false);
             }
             else
             {
@@ -473,7 +578,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
                     ToolName = "ClaudeCli",
                     Title = "Error",
                     Status = OutputItemStatus.Error,
-                    Body = resultText ?? "Unknown CLI error"
+                    Body = FormatCliError(detail, stderrText)
                 };
                 _outputListener.OnStepStarted(errorItem);
                 _outputListener.OnStepCompleted(errorItem);
@@ -1004,44 +1109,133 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
     public void LaunchLogin()
     {
-        // Tear down the long-running CLI process so the next SendMessageAsync
-        // call starts a fresh process that picks up the new credentials.
+        // The turn is already over by the time a login banner can be clicked —
+        // an auth error is what ended it — so the process can go now.
+        LaunchInteractiveCli("/login", "login", stopHostNow: true);
+    }
+
+    public event Action<string?>? WorkspaceTrustRequired;
+
+    public void LaunchTrustPrompt()
+    {
+        // No arguments: the CLI puts its trust dialog up at startup for a folder
+        // it doesn't recognise, which is the whole point of opening this window.
+        // It then writes the answer to its own config, so we never have to work
+        // out which project key this working directory belongs to — and the
+        // evidence says we'd get that wrong, since the CLI keys trust on the
+        // repo root rather than the directory it was started in.
+        //
+        // The restart is deferred, unlike login: this banner appears while the
+        // CLI is starting, so a turn is usually still running behind it and
+        // tearing the process down here would abort the user's message. Trust
+        // is read at startup, so the next message gets a process that honours
+        // whatever they just answered.
+        Interlocked.Exchange(ref _restartBeforeNextMessage, 1);
+        LaunchInteractiveCli("", "workspace trust", stopHostNow: false);
+    }
+
+    // 1 when the running CLI predates a change it can only pick up by starting
+    // again, and the turn in flight is worth more than applying it immediately.
+    private int _restartBeforeNextMessage;
+
+    /// <summary>
+    /// Stops the CLI if something has asked for a restart since the last
+    /// message, so the next one starts a process that sees the new state.
+    /// </summary>
+    private void RestartHostIfPending()
+    {
+        if (Interlocked.Exchange(ref _restartBeforeNextMessage, 0) != 1) return;
+        if (!_host.IsRunning) return;
+
         try
         {
             _host.Stop();
             lock (_dispatcherLock) { _dispatcherTask = null; }
+            _logger.LogInformation("[ClaudeCli] Restarting the CLI to pick up a startup-only change");
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "[ClaudeCli] Failed to stop host before launching login");
+            _logger.LogWarning(ex, "[ClaudeCli] Failed to restart the CLI for a pending change");
+        }
+    }
+
+    /// <summary>
+    /// Opens a console window running the CLI interactively so the user can
+    /// answer a prompt only the interactive CLI shows.
+    /// </summary>
+    private void LaunchInteractiveCli(string cliArguments, string purpose, bool stopHostNow)
+    {
+        if (stopHostNow)
+        {
+            try
+            {
+                _host.Stop();
+                lock (_dispatcherLock) { _dispatcherTask = null; }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[ClaudeCli] Failed to stop host before launching {Purpose} console", purpose);
+            }
         }
 
-        // Open an interactive console window running the Claude CLI so the user
-        // can complete /login. Passing /login as the first argument matches the
-        // hint Anthropic prints in the error message ("Please run /login").
         try
         {
             var quotedPath = $"\"{_options.ClaudeCliPath}\"";
+            var tail = string.IsNullOrEmpty(cliArguments) ? "" : " " + cliArguments;
             var psi = new ProcessStartInfo
             {
                 FileName = "cmd.exe",
-                Arguments = $"/K {quotedPath} /login",
+                Arguments = $"/K {quotedPath}{tail}",
                 WorkingDirectory = _options.WorkingDirectory,
 
                 // Started directly rather than through the shell so the key can
                 // be cleared for this console: ProcessStartInfo refuses to carry
                 // an environment when UseShellExecute is on. cmd.exe is a console
                 // program and this process is not, so Windows still gives it a
-                // window of its own — which is the point of the login flow.
+                // window of its own — which is the point of these flows.
                 UseShellExecute = false,
             };
             UseSubscriptionAuth(psi);
             Process.Start(psi);
+            _logger.LogInformation("[ClaudeCli] Opened an interactive CLI console for {Purpose}", purpose);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[ClaudeCli] Failed to launch login console");
+            _logger.LogError(ex, "[ClaudeCli] Failed to launch {Purpose} console", purpose);
         }
+    }
+
+    /// <summary>
+    /// Watches stderr for the CLI's complaint that this workspace is untrusted.
+    /// It is not an error — the session runs — but every <c>permissions.allow</c>
+    /// entry is discarded, so the user is prompted for tools they have already
+    /// allowed, with nothing on screen to say why.
+    /// </summary>
+    private void OnHostStderrLine(string line)
+    {
+        if (!LooksLikeUntrustedWorkspace(line)) return;
+
+        // The CLI repeats this per settings file it had to ignore; one banner is
+        // enough, and the flag resets when a new process starts.
+        if (Interlocked.Exchange(ref _trustWarningRaised, 1) != 0) return;
+
+        _logger.LogWarning("[ClaudeCli] Workspace is not trusted; permissions.allow entries are being ignored");
+        try { WorkspaceTrustRequired?.Invoke(line); }
+        catch (Exception ex) { _logger.LogError(ex, "[ClaudeCli] WorkspaceTrustRequired handler threw"); }
+    }
+
+    /// <summary>
+    /// Matches the CLI's untrusted-workspace warning, e.g. "Ignoring 23
+    /// permissions.allow entries from .claude/settings.json ...: this workspace
+    /// has not been trusted. Run Claude Code interactively here once and accept
+    /// the trust dialog, or set projects["..."].hasTrustDialogAccepted: true ...".
+    /// </summary>
+    private static bool LooksLikeUntrustedWorkspace(string? text)
+    {
+        if (string.IsNullOrEmpty(text)) return false;
+        var t = text!.ToLowerInvariant();
+        return t.Contains("has not been trusted")
+            || t.Contains("hastrustdialogaccepted");
     }
 
     private static bool LooksLikeAuthError(string? text)
@@ -1059,7 +1253,68 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             || t.Contains("api error: 401");
     }
 
-    public void Dispose() => _host.Dispose();
+    /// <summary>
+    /// Matches the CLI's refusal to resume a session it cannot find:
+    /// "No conversation found with session ID: ...", which it writes both to
+    /// stderr and into the result event's <c>errors</c> array.
+    /// </summary>
+    private static bool LooksLikeMissingSessionError(string? text)
+    {
+        if (string.IsNullOrEmpty(text)) return false;
+        var t = text!.ToLowerInvariant();
+        return t.Contains("no conversation found")
+            || t.Contains("session not found")
+            || t.Contains("no session found");
+    }
+
+    /// <summary>
+    /// Joins the <c>errors</c> array the CLI attaches to a result event, or null
+    /// when it carries none.
+    /// </summary>
+    private static string? ExtractResultErrors(JsonElement evt)
+    {
+        if (!evt.TryGetProperty("errors", out var errors)) return null;
+        if (errors.ValueKind != JsonValueKind.Array) return null;
+
+        var lines = new List<string>();
+        foreach (var e in errors.EnumerateArray())
+        {
+            // Entries have been strings in every case observed; an object form
+            // would still be worth showing raw rather than dropping.
+            var text = e.ValueKind == JsonValueKind.String ? e.GetString() : e.ToString();
+            if (!string.IsNullOrWhiteSpace(text)) lines.Add(text!.Trim());
+        }
+
+        return lines.Count == 0 ? null : string.Join("\n", lines);
+    }
+
+    private static string? FirstNonBlank(params string?[] candidates)
+    {
+        foreach (var candidate in candidates)
+            if (!string.IsNullOrWhiteSpace(candidate)) return candidate!.Trim();
+        return null;
+    }
+
+    /// <summary>
+    /// Builds the body for an in-chat CLI error, preferring the CLI's own account
+    /// of it and falling back to whatever it last wrote to stderr.
+    /// </summary>
+    private static string FormatCliError(string? detail, string? stderrText)
+    {
+        if (!string.IsNullOrWhiteSpace(detail)) return detail!;
+        if (!string.IsNullOrWhiteSpace(stderrText))
+            return "The Claude CLI failed without reporting a reason. Its last output was:\n\n```\n"
+                + stderrText!.Trim() + "\n```";
+
+        return "The Claude CLI reported an error but gave no details. "
+            + "The extension log may have more: %APPDATA%\\VsAgentic\\logs.";
+    }
+
+    public void Dispose()
+    {
+        _host.StderrLine -= OnHostStderrLine;
+        _host.Dispose();
+    }
 
     /// <summary>State for one in-flight turn.</summary>
     private sealed class TurnState

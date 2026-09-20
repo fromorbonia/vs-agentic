@@ -125,6 +125,8 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         var optionsPage = (VsAgenticOptionsPage?)GetDialogPage(typeof(VsAgenticOptionsPage));
         if (optionsPage is null) return;
 
+        optionsPage.Applied += OnOptionsApplied;
+
         ChatZoom.Initialize(optionsPage.ZoomPercent / 100.0);
 
         // Coalesced rather than written per step: SaveSettingsToStorage
@@ -158,6 +160,32 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         {
             // Worst case the level is forgotten at the next restart.
             System.Diagnostics.Debug.WriteLine($"VsAgentic: Failed to persist zoom: {ex}");
+        }
+    }
+
+    /// <summary>
+    /// Pushes Appearance-tab changes into every chat session tool window that's
+    /// already open. Each one was handed its own copy of the options when its
+    /// window was created (see <see cref="CreateChatViewModel"/>), so without
+    /// this a toggle would only apply the next time a session is opened.
+    /// </summary>
+    private void OnOptionsApplied(object? sender, EventArgs e)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+
+        if (sender is not VsAgenticOptionsPage optionsPage) return;
+
+        foreach (var kvp in _sessionWindowMap)
+        {
+            var window = FindToolWindow(typeof(ChatSessionToolWindow), kvp.Value, false);
+            if (window is ChatSessionToolWindow chatWindow
+                && chatWindow.ChatControl.DataContext is ChatSessionViewModel vm)
+            {
+                vm.ApplyAppearanceOptions(
+                    optionsPage.AnimateTitleWhileBusy,
+                    optionsPage.AnimateTitleWhileWaiting,
+                    optionsPage.FlashStatusBarWhileWaiting);
+            }
         }
     }
 
@@ -737,12 +765,16 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                 _persistZoom = null;
             }
 
-            // A zoom step in the last half-second still has its write pending;
-            // flush it rather than lose it on the way out.
-            if (_zoomSaveTimer is { IsEnabled: true }
-                && GetDialogPage(typeof(VsAgenticOptionsPage)) is VsAgenticOptionsPage optionsPage)
+            if (GetDialogPage(typeof(VsAgenticOptionsPage)) is VsAgenticOptionsPage optionsPage)
             {
-                SaveZoomSetting(optionsPage);
+                optionsPage.Applied -= OnOptionsApplied;
+
+                // A zoom step in the last half-second still has its write pending;
+                // flush it rather than lose it on the way out.
+                if (_zoomSaveTimer is { IsEnabled: true })
+                {
+                    SaveZoomSetting(optionsPage);
+                }
             }
             _zoomSaveTimer?.Stop();
 

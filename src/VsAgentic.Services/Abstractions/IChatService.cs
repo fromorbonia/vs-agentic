@@ -84,4 +84,27 @@ public interface IChatService
     /// new credentials.
     /// </summary>
     void LaunchLogin();
+
+    /// <summary>
+    /// Raised when the CLI reports that it is ignoring this workspace's
+    /// <c>permissions.allow</c> entries because the folder has not been trusted.
+    /// The argument is the CLI's own message, which names the exact setting it
+    /// wants. Not fatal — the session runs, but every allow-listed tool still
+    /// prompts. Hosts should offer <see cref="LaunchTrustPrompt"/>.
+    ///
+    /// Raised at most once per CLI process, on a background thread.
+    /// </summary>
+    event Action<string?>? WorkspaceTrustRequired;
+
+    /// <summary>
+    /// Launches an interactive Claude CLI window in the working directory so the
+    /// user can accept the CLI's own trust dialog, and tears down the current
+    /// process so the next <see cref="SendMessageAsync"/> call picks up the
+    /// newly trusted workspace.
+    ///
+    /// Deliberately the CLI's dialog rather than a write to its config: trust is
+    /// the CLI's to grant, it owns the file, and only it knows which project key
+    /// a given working directory resolves to.
+    /// </summary>
+    void LaunchTrustPrompt();
 }

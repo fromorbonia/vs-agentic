@@ -85,6 +85,13 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     // emoji presentation — its text-presentation fallback is narrower.
     private static readonly string[] AwaitingFrames = { "👋 ", "✋️ " };
 
+    // Shown in place of the hand when AnimateTitleWhileWaiting is off. Unlike
+    // Busy, AwaitingUser exists to make a backgrounded window visibly blocked
+    // on the user — turning the animation off should stop the motion, not
+    // remove the signal, so this keeps the pre-animation "? " prefix as a
+    // static fallback rather than falling through to no prefix at all.
+    private const string AwaitingStaticPrefix = "? ";
+
     // The timer ticks at spinner speed, so anything slower asks for a larger
     // TicksPerFrame rather than its own timer. The hand at 4 lands near 0.5s,
     // which reads as a wave instead of a strobe.
@@ -123,6 +130,20 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         SessionActivity.AwaitingUser => _options.AnimateTitleWhileWaiting,
         _ => false
     };
+
+    /// <summary>
+    /// Pushes Tools → Options → Appearance changes into an already-open session.
+    /// <see cref="_options"/> is a private copy captured when the session's tool
+    /// window was created, so without this a toggle only takes effect on the
+    /// next session opened rather than the one currently on screen.
+    /// </summary>
+    public void ApplyAppearanceOptions(bool animateTitleWhileBusy, bool animateTitleWhileWaiting, bool flashStatusBarWhileWaiting)
+    {
+        _options.AnimateTitleWhileBusy = animateTitleWhileBusy;
+        _options.AnimateTitleWhileWaiting = animateTitleWhileWaiting;
+        _options.FlashStatusBarWhileWaiting = flashStatusBarWhileWaiting;
+        UpdateActivityIndicator();
+    }
 
     /// <summary>Text for the indicator strip under the chat input; empty hides it.</summary>
     public string StatusText => Activity switch
@@ -206,7 +227,9 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         var animation = CurrentAnimation;
         var prefix = animation is not null && !animation.HasExpired(_tick)
             ? animation.FrameAt(_tick)
-            : "";
+            : Activity == SessionActivity.AwaitingUser && !_options.AnimateTitleWhileWaiting
+                ? AwaitingStaticPrefix
+                : "";
         DisplayTitle = prefix + SessionTitle;
     }
 
@@ -283,6 +306,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             _questionBroker.QuestionRequested += OnQuestionBrokerRequested;
 
         chatService.LoginRequired += OnChatServiceLoginRequired;
+        chatService.WorkspaceTrustRequired += OnChatServiceWorkspaceTrustRequired;
 
         InitializeUsage(chatService, options.Value);
     }
@@ -296,6 +320,30 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                 ActiveBanner = null;
                 _chatService?.LaunchLogin();
             });
+        });
+    }
+
+    private void OnChatServiceWorkspaceTrustRequired(string? cliMessage)
+    {
+        Dispatch(() =>
+        {
+            // Never take the slot from a banner that something is waiting on: a
+            // permission prompt or question card has the CLI blocked until it is
+            // answered, and this warning costs nothing to miss for one run.
+            if (ActiveBanner is not null)
+            {
+                _logger.LogDebug("[Chat] Workspace-trust banner suppressed; another banner is active");
+                return;
+            }
+
+            ActiveBanner = new TrustBannerViewModel(
+                cliMessage,
+                onTrustClicked: () =>
+                {
+                    ActiveBanner = null;
+                    _chatService?.LaunchTrustPrompt();
+                },
+                onDismissed: () => ActiveBanner = null);
         });
     }
 
@@ -834,6 +882,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             {
                 _chatService.UsageChanged -= OnChatServiceUsageChanged;
                 _chatService.ModelChanged -= OnChatServiceModelChanged;
+                _chatService.WorkspaceTrustRequired -= OnChatServiceWorkspaceTrustRequired;
             }
         }
         catch { }

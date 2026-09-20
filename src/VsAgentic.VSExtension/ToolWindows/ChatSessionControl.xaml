@@ -165,6 +165,9 @@
         <DataTemplate DataType="{x:Type bvm:LoginBannerViewModel}">
             <bv:LoginBannerControl/>
         </DataTemplate>
+        <DataTemplate DataType="{x:Type bvm:TrustBannerViewModel}">
+            <bv:TrustBannerControl/>
+        </DataTemplate>
         <DataTemplate DataType="{x:Type bvm:QuestionCardViewModel}">
             <bv:QuestionCardControl/>
         </DataTemplate>

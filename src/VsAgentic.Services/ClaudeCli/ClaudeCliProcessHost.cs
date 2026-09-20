@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
@@ -51,6 +52,13 @@ public sealed class ClaudeCliProcessHost : IDisposable
 
     private readonly object _lifecycleLock = new object();
 
+    // Last few stderr lines of the current run, kept so a failure the CLI
+    // describes nowhere in its event stream can still be shown to the user
+    // rather than reaching them as a blank error.
+    private const int MaxRetainedStderrLines = 20;
+    private readonly Queue<string> _recentStderr = new Queue<string>();
+    private readonly object _stderrLock = new object();
+
     public ClaudeCliProcessHost(
         IOptions<VsAgenticOptions> options,
         IPermissionBroker permissionBroker,
@@ -90,10 +98,38 @@ public sealed class ClaudeCliProcessHost : IDisposable
         }
     }
 
+    /// <summary>
+    /// Raised for each non-empty stderr line the CLI writes. Some conditions are
+    /// reported only here — a workspace the CLI won't trust, for one — so a
+    /// listener is the only way to react to them as they happen. Raised on the
+    /// stderr reader thread; handlers must not block and must marshal their own
+    /// UI work.
+    /// </summary>
+    public event Action<string>? StderrLine;
+
+    /// <summary>
+    /// Returns and clears the stderr lines captured since the last call, or null
+    /// when nothing has been written. Draining keeps a stale line from being
+    /// blamed for an unrelated failure later in the run.
+    /// </summary>
+    public string? DrainRecentStderr()
+    {
+        lock (_stderrLock)
+        {
+            if (_recentStderr.Count == 0) return null;
+            var text = string.Join(Environment.NewLine, _recentStderr);
+            _recentStderr.Clear();
+            return text;
+        }
+    }
+
     private void StartLocked()
     {
         // Tear down anything stale from a prior crashed run.
         TearDownLocked();
+
+        // A previous process's complaints must not be attributed to this one.
+        lock (_stderrLock) { _recentStderr.Clear(); }
 
         _runCts = new CancellationTokenSource();
 
@@ -367,10 +403,23 @@ public sealed class ClaudeCliProcessHost : IDisposable
             }
         }
         catch (OperationCanceledException) { }
+        catch (IOException ex) when (HasProcessExited())
+        {
+            // "The pipe has been ended" is what a dead CLI looks like from this
+            // side. The exit itself is reported (and diagnosed) elsewhere, so
+            // this is a consequence, not a fault of its own.
+            _logger.LogDebug(ex, "[ClaudeCli] stdin writer stopped: the CLI process had already exited");
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "[ClaudeCli] stdin writer crashed");
         }
+    }
+
+    private bool HasProcessExited()
+    {
+        try { return _process is null || _process.HasExited; }
+        catch { return true; }
     }
 
     private async Task StdoutReaderLoopAsync(CancellationToken ct)
@@ -419,8 +468,18 @@ public sealed class ClaudeCliProcessHost : IDisposable
             while ((line = await stderr.ReadLineAsync().ConfigureAwait(false)) != null)
             {
                 if (ct.IsCancellationRequested) return;
-                if (!string.IsNullOrWhiteSpace(line))
-                    _logger.LogInformation("[ClaudeCli stderr] {Line}", line);
+                if (string.IsNullOrWhiteSpace(line)) continue;
+
+                _logger.LogInformation("[ClaudeCli stderr] {Line}", line);
+                lock (_stderrLock)
+                {
+                    _recentStderr.Enqueue(line!.Trim());
+                    while (_recentStderr.Count > MaxRetainedStderrLines) _recentStderr.Dequeue();
+                }
+
+                // A listener that throws must not cost us the rest of stderr.
+                try { StderrLine?.Invoke(line!.Trim()); }
+                catch (Exception ex) { _logger.LogError(ex, "[ClaudeCli] StderrLine handler threw"); }
             }
         }
         catch (OperationCanceledException) { }

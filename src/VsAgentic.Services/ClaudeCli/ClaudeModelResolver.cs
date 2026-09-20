@@ -44,18 +44,7 @@ public static class ClaudeModelResolver
 
         try
         {
-            var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            if (string.IsNullOrEmpty(userProfile)) return null;
-
-            var projectsRoot = Path.Combine(userProfile, ".claude", "projects");
-            if (!Directory.Exists(projectsRoot)) return null;
-
-            // Transcripts live under a per-working-directory folder whose name is
-            // an encoded form of the path ("E:\Lingos" -> "E--Lingos"). Rather
-            // than reproduce that encoding — undocumented and liable to change —
-            // just find the file by session id.
-            var file = FirstOrDefault(Directory.EnumerateFiles(
-                projectsRoot, sessionId!.Trim() + ".jsonl", SearchOption.AllDirectories));
+            var file = ClaudeSessionTranscript.FindPath(sessionId, logger);
             if (file is null)
             {
                 logger?.LogDebug("[ModelResolver] No transcript found for session {SessionId}", sessionId);
@@ -100,12 +89,6 @@ public static class ClaudeModelResolver
             logger?.LogDebug(ex, "[ModelResolver] Could not read transcript for session {SessionId}", sessionId);
             return null;
         }
-    }
-
-    private static string? FirstOrDefault(IEnumerable<string> items)
-    {
-        foreach (var item in items) return item;
-        return null;
     }
 
     /// <summary>
