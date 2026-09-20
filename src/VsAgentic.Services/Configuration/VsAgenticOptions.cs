@@ -78,4 +78,12 @@ public class VsAgenticOptions
     /// once the window is already on screen.
     /// </summary>
     public bool FlashStatusBarWhileWaiting { get; set; } = true;
+
+    /// <summary>
+    /// Switch the tool window's tab icon to a checkmark once a turn finishes,
+    /// until the window is looked at. Unlike the Completed title sparkle and
+    /// status bar flash, which always run, this is opt-in — changing the tab
+    /// icon is a bigger visual change than a title prefix or a flash.
+    /// </summary>
+    public bool ShowCompletedIndicator { get; set; } = true;
 }

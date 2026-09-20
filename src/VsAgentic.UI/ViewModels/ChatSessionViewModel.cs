@@ -92,6 +92,13 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     // static fallback rather than falling through to no prefix at all.
     private const string AwaitingStaticPrefix = "? ";
 
+    // Sparkle pulse for a turn that just finished. Unlike the hand, this has
+    // no options-page switch — it and the status bar flash always run for a
+    // turn that hasn't been seen yet, and clear together the moment the
+    // window gets focus (see NotifyWindowFocused), the same way the waiting
+    // hand clears when the banner it represents gets resolved.
+    private static readonly string[] CompletedFrames = { "✨ ", "⭐ " };
+
     // The timer ticks at spinner speed, so anything slower asks for a larger
     // TicksPerFrame rather than its own timer. The hand at 4 lands near 0.5s,
     // which reads as a wave instead of a strobe.
@@ -100,6 +107,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         {
             [SessionActivity.Busy] = new(SpinnerFrames, TicksPerFrame: 1),
             [SessionActivity.AwaitingUser] = new(AwaitingFrames, TicksPerFrame: 4),
+            [SessionActivity.Completed] = new(CompletedFrames, TicksPerFrame: 4),
         };
 
     private int _pendingUserPrompts;
@@ -107,13 +115,33 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     private SessionActivity _lastActivity = SessionActivity.Idle;
     private System.Windows.Threading.DispatcherTimer? _activityTimer;
 
+    // Set when a turn ends (any outcome) and cleared the instant the window
+    // gets focus. A separate flag rather than folding into Activity's other
+    // inputs because, unlike Busy/_pendingUserPrompts, nothing about the
+    // chat service's state says "seen" — only the UI knows that.
+    private bool _turnUnseen;
+
     [ObservableProperty]
     private string _displayTitle = "New Session";
 
     public SessionActivity Activity =>
         _pendingUserPrompts > 0 ? SessionActivity.AwaitingUser :
         IsBusy ? SessionActivity.Busy :
+        _turnUnseen ? SessionActivity.Completed :
         SessionActivity.Idle;
+
+    /// <summary>
+    /// Called by the host when the chat window gets keyboard focus. Clears a
+    /// pending Completed indicator — animation, flash, and the static
+    /// checkmark all key off <see cref="Activity"/>, so this is the one place
+    /// that needs to know what "seen" means.
+    /// </summary>
+    public void NotifyWindowFocused()
+    {
+        if (!_turnUnseen) return;
+        _turnUnseen = false;
+        UpdateActivityIndicator();
+    }
 
     /// <summary>
     /// The animation for the current state, or null when the state has none or
@@ -128,6 +156,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     {
         SessionActivity.Busy => _options.AnimateTitleWhileBusy,
         SessionActivity.AwaitingUser => _options.AnimateTitleWhileWaiting,
+        SessionActivity.Completed => true,
         _ => false
     };
 
@@ -137,11 +166,12 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     /// window was created, so without this a toggle only takes effect on the
     /// next session opened rather than the one currently on screen.
     /// </summary>
-    public void ApplyAppearanceOptions(bool animateTitleWhileBusy, bool animateTitleWhileWaiting, bool flashStatusBarWhileWaiting)
+    public void ApplyAppearanceOptions(bool animateTitleWhileBusy, bool animateTitleWhileWaiting, bool flashStatusBarWhileWaiting, bool showCompletedIndicator)
     {
         _options.AnimateTitleWhileBusy = animateTitleWhileBusy;
         _options.AnimateTitleWhileWaiting = animateTitleWhileWaiting;
         _options.FlashStatusBarWhileWaiting = flashStatusBarWhileWaiting;
+        _options.ShowCompletedIndicator = showCompletedIndicator;
         UpdateActivityIndicator();
     }
 
@@ -150,12 +180,24 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     {
         SessionActivity.Busy => "Thinking...",
         SessionActivity.AwaitingUser => "Waiting for input…",
+        SessionActivity.Completed => "Done",
         _ => ""
     };
 
     /// <summary>Whether the status bar should be pulsing. Bound by ChatSessionControl.xaml.</summary>
     public bool IsFlashing =>
-        Activity == SessionActivity.AwaitingUser && _options.FlashStatusBarWhileWaiting;
+        (Activity == SessionActivity.AwaitingUser && _options.FlashStatusBarWhileWaiting)
+        || Activity == SessionActivity.Completed;
+
+    /// <summary>
+    /// Whether the tool window's tab icon should switch to a checkmark. Unlike
+    /// the animation and flash, this is opt-in — see AnimateTitleWhileWaiting
+    /// vs. AwaitingStaticPrefix for the same "off means quieter, not silent"
+    /// reasoning; here the default just runs the other way, since a changing
+    /// tab icon is a bigger visual change than a title prefix or a flash.
+    /// </summary>
+    public bool ShowCompletedIcon =>
+        Activity == SessionActivity.Completed && _options.ShowCompletedIndicator;
 
     partial void OnIsBusyChanged(bool value) => UpdateActivityIndicator();
 
@@ -168,6 +210,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(Activity));
         OnPropertyChanged(nameof(StatusText));
         OnPropertyChanged(nameof(IsFlashing));
+        OnPropertyChanged(nameof(ShowCompletedIcon));
 
         // Only on a real transition: this runs on every permission request and
         // every resolve, and restarting the tick each time would visibly reset
@@ -637,6 +680,9 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         {
             _sendCts?.Dispose();
             _sendCts = null;
+            // Every turn end counts, not just clean ones — Stop and an error
+            // both still leave the window worth glancing back at.
+            _turnUnseen = true;
             IsBusy = false;
         }
         RequestScroll();
@@ -895,5 +941,6 @@ public enum SessionActivity
 {
     Idle,
     Busy,
-    AwaitingUser
+    AwaitingUser,
+    Completed
 }

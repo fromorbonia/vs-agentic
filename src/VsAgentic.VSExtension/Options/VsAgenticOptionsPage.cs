@@ -94,6 +94,12 @@ public class VsAgenticOptionsPage : DialogPage
     [DefaultValue(true)]
     public bool FlashStatusBarWhileWaiting { get; set; } = true;
 
+    [Category("Appearance")]
+    [DisplayName("Completed - show tab icon")]
+    [Description("Switch the chat window's tab icon to a checkmark once a turn finishes, until you switch to that tab. The sparkle in the tab title and the status bar flash for a finished turn always run; this is the one Completed cue you can turn off.")]
+    [DefaultValue(true)]
+    public bool ShowCompletedIndicator { get; set; } = true;
+
     [Category("Sessions")]
     [DisplayName("Keep days of activity")]
     [Description("When the extension starts, sessions whose last activity is older than this many days are deleted. Default: 30. Set to 0 to disable cleanup.")]

@@ -12,6 +12,7 @@ using VsAgentic.UI.Controls;
 using VsAgentic.UI.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.VisualStudio.Imaging;
 using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.Shell.Interop;
 using Serilog;
@@ -184,7 +185,8 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                 vm.ApplyAppearanceOptions(
                     optionsPage.AnimateTitleWhileBusy,
                     optionsPage.AnimateTitleWhileWaiting,
-                    optionsPage.FlashStatusBarWhileWaiting);
+                    optionsPage.FlashStatusBarWhileWaiting,
+                    optionsPage.ShowCompletedIndicator);
             }
         }
     }
@@ -267,6 +269,7 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                 options.AnimateTitleWhileBusy = optionsPage.AnimateTitleWhileBusy;
                 options.AnimateTitleWhileWaiting = optionsPage.AnimateTitleWhileWaiting;
                 options.FlashStatusBarWhileWaiting = optionsPage.FlashStatusBarWhileWaiting;
+                options.ShowCompletedIndicator = optionsPage.ShowCompletedIndicator;
             }
         });
 
@@ -419,6 +422,11 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                     // so the MessagesRestored event is received by the WebView.
                     chatWindow.ChatControl.Initialize(viewModel);
 
+                    // Captured before anything overwrites it, so the Completed
+                    // checkmark below has something to restore to that isn't a
+                    // guess at whatever the default happens to be.
+                    var defaultIcon = chatWindow.BitmapImageMoniker;
+
                     // Enable persistence on the view model
                     if (session.PersistedId.HasValue && _instance._sessionStore is not null && _instance._solutionDirectory is not null)
                     {
@@ -473,6 +481,14 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                             {
                                 window.Caption = viewModel.DisplayTitle;
                             }
+                        }
+                        else if (e.PropertyName == nameof(ChatSessionViewModel.ShowCompletedIcon))
+                        {
+                            // Same live-refresh mechanism as Caption above — the
+                            // property setter pushes straight to the frame.
+                            chatWindow.BitmapImageMoniker = viewModel.ShowCompletedIcon
+                                ? KnownMonikers.StatusOK
+                                : defaultIcon;
                         }
                     };
 

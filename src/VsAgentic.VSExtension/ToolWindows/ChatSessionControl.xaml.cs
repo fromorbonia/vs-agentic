@@ -75,6 +75,12 @@ public partial class ChatSessionControl : UserControl
         // adopting the level it was born into, not the user changing it.
         ChatZoom.Changed += OnZoomChanged;
         ApplyZoom(ChatZoom.Level);
+
+        // GotFocus bubbles from whichever descendant actually receives it —
+        // the input box, a banner button, anywhere — so this fires as soon as
+        // VS activates the tab and focus lands inside it. That's the "seen
+        // it" signal that clears a pending Completed indicator.
+        GotFocus += (_, _) => viewModel.NotifyWindowFocused();
     }
 
     /// <summary>
