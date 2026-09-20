@@ -236,6 +236,9 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                 options.UsagePlan = optionsPage.UsagePlan;
                 options.FiveHourTokenBudget = optionsPage.FiveHourTokenBudget;
                 options.WeeklyTokenBudget = optionsPage.WeeklyTokenBudget;
+                options.AnimateTitleWhileBusy = optionsPage.AnimateTitleWhileBusy;
+                options.AnimateTitleWhileWaiting = optionsPage.AnimateTitleWhileWaiting;
+                options.FlashStatusBarWhileWaiting = optionsPage.FlashStatusBarWhileWaiting;
             }
         });
 

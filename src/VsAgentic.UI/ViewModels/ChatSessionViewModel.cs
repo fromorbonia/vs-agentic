@@ -18,6 +18,7 @@ namespace VsAgentic.UI.ViewModels;
 public partial class ChatSessionViewModel : ObservableObject, IDisposable
 {
     private readonly IChatService? _chatService;
+    private readonly VsAgenticOptions _options;
     private IDisposable? _serviceScope;
     private readonly ConcurrentDictionary<string, ChatItemViewModel> _activeItems = new();
     private int _userMsgCounter;
@@ -45,15 +46,58 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     /// </summary>
     public bool HasCustomTitle { get; set; }
 
-    // Realtime activity indicator: a braille spinner prefix while the AI is
-    // working, a steady "? " prefix while awaiting user input (permission /
-    // question banner), and no prefix while idle. Host bindings (e.g. the VS
+    // Realtime activity indicator: the tool window caption carries an animated
+    // prefix describing what the session is doing. Host bindings (e.g. the VS
     // tool window caption) should use DisplayTitle; SessionTitle stays plain
     // for the session list entry so the sidebar doesn't flicker.
-    private static readonly string SpinnerFrames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
-    private const string AwaitingPrefix = "? ";
+    //
+    // One animation runs at a time — whichever TitleAnimations maps the current
+    // Activity to — so the tick counter only ever serves that one and is reset
+    // on every transition. Animations therefore never have to be kept in phase
+    // with each other, and adding one is an entry in the table below.
+
+    /// <summary>
+    /// One caption animation. Frames must be equal width and carry their own
+    /// trailing space: the caption is a plain string with no way to hide a
+    /// glyph, so a narrower frame shifts the title text every time it shows.
+    /// </summary>
+    /// <param name="Frames">Glyphs to cycle through, in order.</param>
+    /// <param name="TicksPerFrame">Timer ticks each frame is held for.</param>
+    /// <param name="DurationTicks">
+    /// Ticks before the animation stops on its own, for states that are
+    /// transient rather than held. Null loops until the state changes.
+    /// </param>
+    private sealed record TitleAnimation(string[] Frames, int TicksPerFrame, int? DurationTicks = null)
+    {
+        /// <summary>Ticks for one full pass through <see cref="Frames"/>.</summary>
+        public int CycleTicks => Frames.Length * TicksPerFrame;
+
+        public string FrameAt(int tick) => Frames[(tick / TicksPerFrame) % Frames.Length];
+
+        public bool HasExpired(int tick) => DurationTicks is int d && tick >= d;
+    }
+
+    private static readonly string[] SpinnerFrames =
+        { "⠋ ", "⠙ ", "⠹ ", "⠸ ", "⠼ ", "⠴ ", "⠦ ", "⠧ ", "⠇ ", "⠏ " };
+
+    // Two hand glyphs rather than a hand alternating with blank, for the
+    // equal-width reason above. The trailing U+FE0F on the raised hand forces
+    // emoji presentation — its text-presentation fallback is narrower.
+    private static readonly string[] AwaitingFrames = { "👋 ", "✋️ " };
+
+    // The timer ticks at spinner speed, so anything slower asks for a larger
+    // TicksPerFrame rather than its own timer. The hand at 4 lands near 0.5s,
+    // which reads as a wave instead of a strobe.
+    private static readonly IReadOnlyDictionary<SessionActivity, TitleAnimation> TitleAnimations =
+        new Dictionary<SessionActivity, TitleAnimation>
+        {
+            [SessionActivity.Busy] = new(SpinnerFrames, TicksPerFrame: 1),
+            [SessionActivity.AwaitingUser] = new(AwaitingFrames, TicksPerFrame: 4),
+        };
+
     private int _pendingUserPrompts;
-    private int _spinnerFrame;
+    private int _tick;
+    private SessionActivity _lastActivity = SessionActivity.Idle;
     private System.Windows.Threading.DispatcherTimer? _activityTimer;
 
     [ObservableProperty]
@@ -64,13 +108,56 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         IsBusy ? SessionActivity.Busy :
         SessionActivity.Idle;
 
+    /// <summary>
+    /// The animation for the current state, or null when the state has none or
+    /// the user has switched it off.
+    /// </summary>
+    private TitleAnimation? CurrentAnimation =>
+        TitleAnimations.TryGetValue(Activity, out var animation) && IsAnimationEnabled(Activity)
+            ? animation
+            : null;
+
+    private bool IsAnimationEnabled(SessionActivity activity) => activity switch
+    {
+        SessionActivity.Busy => _options.AnimateTitleWhileBusy,
+        SessionActivity.AwaitingUser => _options.AnimateTitleWhileWaiting,
+        _ => false
+    };
+
+    /// <summary>Text for the indicator strip under the chat input; empty hides it.</summary>
+    public string StatusText => Activity switch
+    {
+        SessionActivity.Busy => "Thinking...",
+        SessionActivity.AwaitingUser => "Waiting for input…",
+        _ => ""
+    };
+
+    /// <summary>Whether the status bar should be pulsing. Bound by ChatSessionControl.xaml.</summary>
+    public bool IsFlashing =>
+        Activity == SessionActivity.AwaitingUser && _options.FlashStatusBarWhileWaiting;
+
     partial void OnIsBusyChanged(bool value) => UpdateActivityIndicator();
 
     partial void OnSessionTitleChanged(string value) => UpdateDisplayTitle();
 
     private void UpdateActivityIndicator()
     {
-        if (Activity == SessionActivity.Busy)
+        // Activity and everything derived from it are computed, so they have to
+        // be notified by hand for ChatSessionControl.xaml to see the change.
+        OnPropertyChanged(nameof(Activity));
+        OnPropertyChanged(nameof(StatusText));
+        OnPropertyChanged(nameof(IsFlashing));
+
+        // Only on a real transition: this runs on every permission request and
+        // every resolve, and restarting the tick each time would visibly reset
+        // the spinner mid-turn.
+        if (Activity != _lastActivity)
+        {
+            _lastActivity = Activity;
+            _tick = 0;
+        }
+
+        if (CurrentAnimation is not null)
         {
             EnsureActivityTimer();
             if (!_activityTimer!.IsEnabled) _activityTimer.Start();
@@ -94,19 +181,32 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         };
         _activityTimer.Tick += (_, _) =>
         {
-            _spinnerFrame = (_spinnerFrame + 1) % SpinnerFrames.Length;
+            var animation = CurrentAnimation;
+            if (animation is null)
+            {
+                _activityTimer!.Stop();
+                return;
+            }
+
+            // A held animation wraps so the counter stays bounded; a transient
+            // one must keep counting up or it can never reach its duration.
+            _tick = animation.DurationTicks is null
+                ? (_tick + 1) % animation.CycleTicks
+                : _tick + 1;
+
+            if (animation.HasExpired(_tick))
+                _activityTimer!.Stop();
+
             UpdateDisplayTitle();
         };
     }
 
     private void UpdateDisplayTitle()
     {
-        var prefix = Activity switch
-        {
-            SessionActivity.Busy => SpinnerFrames[_spinnerFrame] + " ",
-            SessionActivity.AwaitingUser => AwaitingPrefix,
-            _ => ""
-        };
+        var animation = CurrentAnimation;
+        var prefix = animation is not null && !animation.HasExpired(_tick)
+            ? animation.FrameAt(_tick)
+            : "";
         DisplayTitle = prefix + SessionTitle;
     }
 
@@ -147,6 +247,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     /// </summary>
     public ChatSessionViewModel(string workingDirectory = "")
     {
+        _options = new VsAgenticOptions { WorkingDirectory = workingDirectory };
         WorkingDirectory = workingDirectory;
         _logger = NullLogger.Instance;
     }
@@ -165,7 +266,8 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         ILogger<ChatSessionViewModel>? logger = null)
     {
         _chatService = chatService;
-        WorkingDirectory = options.Value.WorkingDirectory;
+        _options = options.Value;
+        WorkingDirectory = _options.WorkingDirectory;
         _logger = (ILogger?)logger ?? NullLogger.Instance;
 
         outputListener.StepStarted += OnStepStarted;

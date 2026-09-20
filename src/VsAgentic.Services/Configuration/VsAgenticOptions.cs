@@ -58,4 +58,24 @@ public class VsAgenticOptions
     /// <summary>The weekly budget actually in force, after any override.</summary>
     public long EffectiveWeeklyBudget =>
         WeeklyTokenBudget > 0 ? WeeklyTokenBudget : ClaudeUsagePlanDefaults.LongWindowTokens(UsagePlan);
+
+    /// <summary>
+    /// Animate the tool window caption with a spinner while a turn is running.
+    /// Disabling leaves the plain session title.
+    /// </summary>
+    public bool AnimateTitleWhileBusy { get; set; } = true;
+
+    /// <summary>
+    /// Animate the tool window caption with a waving hand while a permission or
+    /// question banner is waiting to be answered.
+    /// </summary>
+    public bool AnimateTitleWhileWaiting { get; set; } = true;
+
+    /// <summary>
+    /// Pulse the chat status bar background while a banner is waiting to be
+    /// answered. Separate from <see cref="AnimateTitleWhileWaiting"/> because the
+    /// caption is what a backgrounded window shows, while the flash only helps
+    /// once the window is already on screen.
+    /// </summary>
+    public bool FlashStatusBarWhileWaiting { get; set; } = true;
 }

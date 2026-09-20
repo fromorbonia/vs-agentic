@@ -61,6 +61,24 @@ public class VsAgenticOptionsPage : DialogPage
     [DefaultValue(100)]
     public int ZoomPercent { get; set; } = 100;
 
+    [Category("Appearance")]
+    [DisplayName("Animate tab title while working")]
+    [Description("Show a spinner in front of the chat window's tab title while a turn is running. Turn off for a static title.")]
+    [DefaultValue(true)]
+    public bool AnimateTitleWhileBusy { get; set; } = true;
+
+    [Category("Appearance")]
+    [DisplayName("Animate tab title while waiting for you")]
+    [Description("Show a waving hand in front of the chat window's tab title while a permission or question banner needs an answer, so a backgrounded window still shows it is blocked on you.")]
+    [DefaultValue(true)]
+    public bool AnimateTitleWhileWaiting { get; set; } = true;
+
+    [Category("Appearance")]
+    [DisplayName("Flash status bar while waiting for you")]
+    [Description("Pulse the background of the bar under the chat input while a permission or question banner needs an answer.")]
+    [DefaultValue(true)]
+    public bool FlashStatusBarWhileWaiting { get; set; } = true;
+
     [Category("Sessions")]
     [DisplayName("Keep days of activity")]
     [Description("When the extension starts, sessions whose last activity is older than this many days are deleted. Default: 30. Set to 0 to disable cleanup.")]
