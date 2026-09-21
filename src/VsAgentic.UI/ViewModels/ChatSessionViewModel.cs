@@ -349,7 +349,6 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             _questionBroker.QuestionRequested += OnQuestionBrokerRequested;
 
         chatService.LoginRequired += OnChatServiceLoginRequired;
-        chatService.WorkspaceTrustRequired += OnChatServiceWorkspaceTrustRequired;
 
         InitializeUsage(chatService, options.Value);
     }
@@ -363,30 +362,6 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                 ActiveBanner = null;
                 _chatService?.LaunchLogin();
             });
-        });
-    }
-
-    private void OnChatServiceWorkspaceTrustRequired(string? cliMessage)
-    {
-        Dispatch(() =>
-        {
-            // Never take the slot from a banner that something is waiting on: a
-            // permission prompt or question card has the CLI blocked until it is
-            // answered, and this warning costs nothing to miss for one run.
-            if (ActiveBanner is not null)
-            {
-                _logger.LogDebug("[Chat] Workspace-trust banner suppressed; another banner is active");
-                return;
-            }
-
-            ActiveBanner = new TrustBannerViewModel(
-                cliMessage,
-                onTrustClicked: () =>
-                {
-                    ActiveBanner = null;
-                    _chatService?.LaunchTrustPrompt();
-                },
-                onDismissed: () => ActiveBanner = null);
         });
     }
 
@@ -928,7 +903,6 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             {
                 _chatService.UsageChanged -= OnChatServiceUsageChanged;
                 _chatService.ModelChanged -= OnChatServiceModelChanged;
-                _chatService.WorkspaceTrustRequired -= OnChatServiceWorkspaceTrustRequired;
             }
         }
         catch { }
