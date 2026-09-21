@@ -889,6 +889,16 @@ document.addEventListener('click', function(e) {
     }
 });
 
+// Clicking in the transcript means the user is looking at this session, which
+// is one of the things that clears its "turn finished" indicator. The host
+// cannot see it for itself: this page is a browser child window, so the click
+// is neither a WPF mouse event nor necessarily a change of WPF focus.
+// pointerdown in the capture phase, so a handler that stops propagation (the
+// file links above, text selection) cannot swallow the signal.
+document.addEventListener('pointerdown', function() {
+    window.chrome.webview.postMessage(JSON.stringify({type:'click'}));
+}, true);
+
 // --- Zoom ---
 // The host owns the zoom level, because it also scales the input box and the
 // banners that sit outside this page. Ctrl+wheel and Ctrl+/- are swallowed by

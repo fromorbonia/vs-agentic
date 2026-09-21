@@ -92,11 +92,13 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     // static fallback rather than falling through to no prefix at all.
     private const string AwaitingStaticPrefix = "? ";
 
-    // Sparkle pulse for a turn that just finished. Unlike the hand, this has
-    // no options-page switch — it and the status bar flash always run for a
-    // turn that hasn't been seen yet, and clear together the moment the
-    // window gets focus (see NotifyWindowFocused), the same way the waiting
-    // hand clears when the banner it represents gets resolved.
+    // Sparkle pulse for a turn that just finished. It, the status bar flash and
+    // the tab checkmark each have their own options-page switch, and whichever
+    // are on clear together the moment the window is looked at (see
+    // NotifySessionSeen), the same way the waiting hand clears when the
+    // banner it represents gets resolved. No static fallback like
+    // AwaitingStaticPrefix: a finished turn isn't blocked on anything, so off
+    // here means the caption stays plain.
     private static readonly string[] CompletedFrames = { "✨ ", "⭐ " };
 
     // The timer ticks at spinner speed, so anything slower asks for a larger
@@ -131,12 +133,14 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         SessionActivity.Idle;
 
     /// <summary>
-    /// Called by the host when the chat window gets keyboard focus. Clears a
-    /// pending Completed indicator — animation, flash, and the static
-    /// checkmark all key off <see cref="Activity"/>, so this is the one place
-    /// that needs to know what "seen" means.
+    /// Called by the host when the user gives the chat window their attention —
+    /// focus landing inside it, or a click anywhere in it. Clears a pending
+    /// Completed indicator: animation, flash, and the static checkmark all key
+    /// off <see cref="Activity"/>, so this is the one place that needs to know
+    /// what "seen" means. Idempotent, since the host raises it far more often
+    /// than there is an indicator to clear.
     /// </summary>
-    public void NotifyWindowFocused()
+    public void NotifySessionSeen()
     {
         if (!_turnUnseen) return;
         _turnUnseen = false;
@@ -156,7 +160,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     {
         SessionActivity.Busy => _options.AnimateTitleWhileBusy,
         SessionActivity.AwaitingUser => _options.AnimateTitleWhileWaiting,
-        SessionActivity.Completed => true,
+        SessionActivity.Completed => _options.AnimateTitleWhenComplete,
         _ => false
     };
 
@@ -166,12 +170,20 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     /// window was created, so without this a toggle only takes effect on the
     /// next session opened rather than the one currently on screen.
     /// </summary>
-    public void ApplyAppearanceOptions(bool animateTitleWhileBusy, bool animateTitleWhileWaiting, bool flashStatusBarWhileWaiting, bool showCompletedIndicator)
+    public void ApplyAppearanceOptions(
+        bool animateTitleWhileBusy,
+        bool animateTitleWhileWaiting,
+        bool flashStatusBarWhileWaiting,
+        bool showCompletedIndicator,
+        bool animateTitleWhenComplete,
+        bool flashStatusBarWhenComplete)
     {
         _options.AnimateTitleWhileBusy = animateTitleWhileBusy;
         _options.AnimateTitleWhileWaiting = animateTitleWhileWaiting;
         _options.FlashStatusBarWhileWaiting = flashStatusBarWhileWaiting;
         _options.ShowCompletedIndicator = showCompletedIndicator;
+        _options.AnimateTitleWhenComplete = animateTitleWhenComplete;
+        _options.FlashStatusBarWhenComplete = flashStatusBarWhenComplete;
         UpdateActivityIndicator();
     }
 
@@ -187,14 +199,13 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     /// <summary>Whether the status bar should be pulsing. Bound by ChatSessionControl.xaml.</summary>
     public bool IsFlashing =>
         (Activity == SessionActivity.AwaitingUser && _options.FlashStatusBarWhileWaiting)
-        || Activity == SessionActivity.Completed;
+        || (Activity == SessionActivity.Completed && _options.FlashStatusBarWhenComplete);
 
     /// <summary>
-    /// Whether the tool window's tab icon should switch to a checkmark. Unlike
-    /// the animation and flash, this is opt-in — see AnimateTitleWhileWaiting
-    /// vs. AwaitingStaticPrefix for the same "off means quieter, not silent"
-    /// reasoning; here the default just runs the other way, since a changing
-    /// tab icon is a bigger visual change than a title prefix or a flash.
+    /// Whether the tool window's tab icon should switch to a checkmark. Each of
+    /// the three Completed cues — this icon, the title sparkle, and the status
+    /// bar flash — has its own switch, so a user who only wants one of them can
+    /// say so.
     /// </summary>
     public bool ShowCompletedIcon =>
         Activity == SessionActivity.Completed && _options.ShowCompletedIndicator;

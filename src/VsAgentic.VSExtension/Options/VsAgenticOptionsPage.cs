@@ -96,9 +96,21 @@ public class VsAgenticOptionsPage : DialogPage
 
     [Category("Appearance")]
     [DisplayName("Completed - show tab icon")]
-    [Description("Switch the chat window's tab icon to a checkmark once a turn finishes, until you switch to that tab. The sparkle in the tab title and the status bar flash for a finished turn always run; this is the one Completed cue you can turn off.")]
+    [Description("Switch the chat window's tab icon to a checkmark once a turn finishes, until you switch to that tab.")]
     [DefaultValue(true)]
     public bool ShowCompletedIndicator { get; set; } = true;
+
+    [Category("Appearance")]
+    [DisplayName("Completed - animate tab title")]
+    [Description("Show a sparkle on the chat window's tab title once a turn finishes, until you switch to that tab. Also shows when the window is backgrounded.")]
+    [DefaultValue(true)]
+    public bool AnimateTitleWhenComplete { get; set; } = true;
+
+    [Category("Appearance")]
+    [DisplayName("Completed - flash status bar")]
+    [Description("Pulse the background of the bar under the chat input once a turn finishes, until you switch to that tab.")]
+    [DefaultValue(true)]
+    public bool FlashStatusBarWhenComplete { get; set; } = true;
 
     [Category("Sessions")]
     [DisplayName("Keep days of activity")]

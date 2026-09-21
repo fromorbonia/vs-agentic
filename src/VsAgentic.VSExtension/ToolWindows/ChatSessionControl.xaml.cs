@@ -76,11 +76,28 @@ public partial class ChatSessionControl : UserControl
         ChatZoom.Changed += OnZoomChanged;
         ApplyZoom(ChatZoom.Level);
 
-        // GotFocus bubbles from whichever descendant actually receives it —
-        // the input box, a banner button, anywhere — so this fires as soon as
-        // VS activates the tab and focus lands inside it. That's the "seen
-        // it" signal that clears a pending Completed indicator.
-        GotFocus += (_, _) => viewModel.NotifyWindowFocused();
+        // Three ways to say "seen it", between them covering everywhere a
+        // pending Completed indicator should stop:
+        //
+        //  - GotFocus bubbles from whichever descendant actually receives it,
+        //    so it fires as soon as VS activates the tab and focus lands
+        //    inside — the input box, a banner button, anywhere.
+        //  - PreviewMouseDown catches a click on the chrome that takes no
+        //    focus: the status bar, the usage meters, a header, bare margin.
+        //  - Clicked is relayed by the page, because the transcript itself is
+        //    a browser child window that WPF sees no mouse events from.
+        GotFocus += (_, _) => viewModel.NotifySessionSeen();
+        ChatWebView.Clicked += OnChatClicked;
+    }
+
+    private void OnChatClicked()
+    {
+        if (DataContext is ChatSessionViewModel vm) vm.NotifySessionSeen();
+    }
+
+    private void OnPreviewMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (DataContext is ChatSessionViewModel vm) vm.NotifySessionSeen();
     }
 
     /// <summary>
@@ -93,6 +110,7 @@ public partial class ChatSessionControl : UserControl
         VSColorTheme.ThemeChanged -= OnThemeChanged;
         ChatZoom.Changed -= OnZoomChanged;
         ChatWebView.ZoomChangeRequested -= OnZoomChangeRequested;
+        ChatWebView.Clicked -= OnChatClicked;
 
         // A popup is its own window and would outlive the pane it belongs to.
         _zoomToastTimer?.Stop();

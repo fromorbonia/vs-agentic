@@ -186,7 +186,9 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                     optionsPage.AnimateTitleWhileBusy,
                     optionsPage.AnimateTitleWhileWaiting,
                     optionsPage.FlashStatusBarWhileWaiting,
-                    optionsPage.ShowCompletedIndicator);
+                    optionsPage.ShowCompletedIndicator,
+                    optionsPage.AnimateTitleWhenComplete,
+                    optionsPage.FlashStatusBarWhenComplete);
             }
         }
     }
@@ -270,6 +272,8 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                 options.AnimateTitleWhileWaiting = optionsPage.AnimateTitleWhileWaiting;
                 options.FlashStatusBarWhileWaiting = optionsPage.FlashStatusBarWhileWaiting;
                 options.ShowCompletedIndicator = optionsPage.ShowCompletedIndicator;
+                options.AnimateTitleWhenComplete = optionsPage.AnimateTitleWhenComplete;
+                options.FlashStatusBarWhenComplete = optionsPage.FlashStatusBarWhenComplete;
             }
         });
 

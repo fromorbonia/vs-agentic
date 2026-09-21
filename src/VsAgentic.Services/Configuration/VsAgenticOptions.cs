@@ -81,9 +81,23 @@ public class VsAgenticOptions
 
     /// <summary>
     /// Switch the tool window's tab icon to a checkmark once a turn finishes,
-    /// until the window is looked at. Unlike the Completed title sparkle and
-    /// status bar flash, which always run, this is opt-in — changing the tab
-    /// icon is a bigger visual change than a title prefix or a flash.
+    /// until the window is looked at.
     /// </summary>
     public bool ShowCompletedIndicator { get; set; } = true;
+
+    /// <summary>
+    /// Animate the tool window caption with a sparkle once a turn finishes,
+    /// until the window is looked at. The Completed counterpart of
+    /// <see cref="AnimateTitleWhileBusy"/>.
+    /// </summary>
+    public bool AnimateTitleWhenComplete { get; set; } = true;
+
+    /// <summary>
+    /// Pulse the chat status bar background once a turn finishes, until the
+    /// window is looked at. Separate from <see cref="AnimateTitleWhenComplete"/>
+    /// for the same reason as <see cref="FlashStatusBarWhileWaiting"/>: the
+    /// caption is what a backgrounded window shows, while the flash only helps
+    /// once the window is already on screen.
+    /// </summary>
+    public bool FlashStatusBarWhenComplete { get; set; } = true;
 }

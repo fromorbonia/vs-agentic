@@ -46,6 +46,15 @@ public partial class ChatWebView : UserControl
     /// </summary>
     public event Action<int>? ZoomChangeRequested;
 
+    /// <summary>
+    /// Raised when the user presses a pointer button anywhere in the rendered
+    /// chat. The transcript is a browser child window, so a click in it is not
+    /// a WPF mouse event and need not move WPF focus either — without this
+    /// relay, reading the chat and clicking about in it would leave the host
+    /// believing the session had never been looked at.
+    /// </summary>
+    public event Action? Clicked;
+
     private bool _isWebViewReady;
     private double _zoomFactor = ZoomLevels.Default;
     private readonly ConcurrentQueue<Func<Task>> _pendingOps = new();
@@ -329,6 +338,10 @@ public partial class ChatWebView : UserControl
             else if (type == "zoom")
             {
                 ZoomChangeRequested?.Invoke(root.GetProperty("step").GetInt32());
+            }
+            else if (type == "click")
+            {
+                Clicked?.Invoke();
             }
         }
         catch

@@ -9,7 +9,8 @@
              xmlns:bv="clr-namespace:VsAgentic.VSExtension.ToolWindows.Banners"
              xmlns:local="clr-namespace:VsAgentic.VSExtension.ToolWindows"
              PreviewMouseWheel="OnPreviewMouseWheel"
-             PreviewKeyDown="OnPreviewKeyDown" >
+             PreviewKeyDown="OnPreviewKeyDown"
+             PreviewMouseDown="OnPreviewMouseDown" >
 
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
