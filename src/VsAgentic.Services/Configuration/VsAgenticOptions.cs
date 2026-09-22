@@ -80,15 +80,16 @@ public class VsAgenticOptions
     public bool FlashStatusBarWhileWaiting { get; set; } = true;
 
     /// <summary>
-    /// Switch the tool window's tab icon to a checkmark once a turn finishes,
-    /// until the window is looked at.
+    /// Mark the tool window caption with a sparkle once a turn finishes, until
+    /// the window is looked at. Gates both forms of the marker: with this off,
+    /// <see cref="AnimateTitleWhenComplete"/> has nothing to animate.
     /// </summary>
     public bool ShowCompletedIndicator { get; set; } = true;
 
     /// <summary>
-    /// Animate the tool window caption with a sparkle once a turn finishes,
-    /// until the window is looked at. The Completed counterpart of
-    /// <see cref="AnimateTitleWhileBusy"/>.
+    /// Pulse the completed marker rather than showing it still. The Completed
+    /// counterpart of <see cref="AnimateTitleWhileBusy"/>, except that Busy and
+    /// AwaitingUser have no separate switch for whether the marker shows at all.
     /// </summary>
     public bool AnimateTitleWhenComplete { get; set; } = true;
 

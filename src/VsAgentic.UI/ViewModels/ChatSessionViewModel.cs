@@ -92,14 +92,19 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     // static fallback rather than falling through to no prefix at all.
     private const string AwaitingStaticPrefix = "? ";
 
-    // Sparkle pulse for a turn that just finished. It, the status bar flash and
-    // the tab checkmark each have their own options-page switch, and whichever
-    // are on clear together the moment the window is looked at (see
-    // NotifySessionSeen), the same way the waiting hand clears when the
-    // banner it represents gets resolved. No static fallback like
-    // AwaitingStaticPrefix: a finished turn isn't blocked on anything, so off
-    // here means the caption stays plain.
+    // Sparkle pulse for a turn that just finished. It and the status bar flash
+    // clear together the moment the window is looked at (see NotifySessionSeen),
+    // the same way the waiting hand clears when the banner it represents gets
+    // resolved.
     private static readonly string[] CompletedFrames = { "✨ ", "⭐ " };
+
+    // The Completed cue when ShowCompletedIndicator is on but the animation is
+    // off — the same arrangement as AwaitingStaticPrefix, except the switch
+    // that silences it entirely is its own rather than the animation's. Its own
+    // glyph rather than a frozen CompletedFrames entry, for the same reason the
+    // waiting fallback is a "?" and not a frozen hand: standing still, a mark
+    // that means "finished" reads better than one that only meant motion.
+    private const string CompletedStaticPrefix = "✔ ";
 
     // The timer ticks at spinner speed, so anything slower asks for a larger
     // TicksPerFrame rather than its own timer. The hand at 4 lands near 0.5s,
@@ -117,11 +122,19 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     private SessionActivity _lastActivity = SessionActivity.Idle;
     private System.Windows.Threading.DispatcherTimer? _activityTimer;
 
-    // Set when a turn ends (any outcome) and cleared the instant the window
-    // gets focus. A separate flag rather than folding into Activity's other
+    // Set when a turn ends unwatched, and cleared the instant the window is
+    // looked at. A separate flag rather than folding into Activity's other
     // inputs because, unlike Busy/_pendingUserPrompts, nothing about the
     // chat service's state says "seen" — only the UI knows that.
     private bool _turnUnseen;
+
+    /// <summary>
+    /// Whether the user is looking at this session right now. Maintained by
+    /// the host, which is the only thing that can see focus; a turn that ends
+    /// while this is true never arms the Completed indicator, because there is
+    /// nobody to call back to a window they are already in.
+    /// </summary>
+    public bool IsSessionFocused { get; set; }
 
     [ObservableProperty]
     private string _displayTitle = "New Session";
@@ -135,8 +148,8 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     /// <summary>
     /// Called by the host when the user gives the chat window their attention —
     /// focus landing inside it, or a click anywhere in it. Clears a pending
-    /// Completed indicator: animation, flash, and the static checkmark all key
-    /// off <see cref="Activity"/>, so this is the one place that needs to know
+    /// Completed indicator: the caption prefix and the flash both key off
+    /// <see cref="Activity"/>, so this is the one place that needs to know
     /// what "seen" means. Idempotent, since the host raises it far more often
     /// than there is an indicator to clear.
     /// </summary>
@@ -160,8 +173,22 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     {
         SessionActivity.Busy => _options.AnimateTitleWhileBusy,
         SessionActivity.AwaitingUser => _options.AnimateTitleWhileWaiting,
-        SessionActivity.Completed => _options.AnimateTitleWhenComplete,
+        // The marker switch gates both forms, so turning it off stops the timer
+        // rather than leaving it running against a prefix nothing will show.
+        SessionActivity.Completed => _options.ShowCompletedIndicator && _options.AnimateTitleWhenComplete,
         _ => false
+    };
+
+    /// <summary>
+    /// The prefix for a state whose animation is switched off but which still
+    /// has something to say. Everything the caption can show for a state is
+    /// either here or in <see cref="TitleAnimations"/>.
+    /// </summary>
+    private string StaticPrefix => Activity switch
+    {
+        SessionActivity.AwaitingUser when !_options.AnimateTitleWhileWaiting => AwaitingStaticPrefix,
+        SessionActivity.Completed when _options.ShowCompletedIndicator => CompletedStaticPrefix,
+        _ => ""
     };
 
     /// <summary>
@@ -201,15 +228,6 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         (Activity == SessionActivity.AwaitingUser && _options.FlashStatusBarWhileWaiting)
         || (Activity == SessionActivity.Completed && _options.FlashStatusBarWhenComplete);
 
-    /// <summary>
-    /// Whether the tool window's tab icon should switch to a checkmark. Each of
-    /// the three Completed cues — this icon, the title sparkle, and the status
-    /// bar flash — has its own switch, so a user who only wants one of them can
-    /// say so.
-    /// </summary>
-    public bool ShowCompletedIcon =>
-        Activity == SessionActivity.Completed && _options.ShowCompletedIndicator;
-
     partial void OnIsBusyChanged(bool value) => UpdateActivityIndicator();
 
     partial void OnSessionTitleChanged(string value) => UpdateDisplayTitle();
@@ -221,7 +239,6 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(Activity));
         OnPropertyChanged(nameof(StatusText));
         OnPropertyChanged(nameof(IsFlashing));
-        OnPropertyChanged(nameof(ShowCompletedIcon));
 
         // Only on a real transition: this runs on every permission request and
         // every resolve, and restarting the tick each time would visibly reset
@@ -281,9 +298,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         var animation = CurrentAnimation;
         var prefix = animation is not null && !animation.HasExpired(_tick)
             ? animation.FrameAt(_tick)
-            : Activity == SessionActivity.AwaitingUser && !_options.AnimateTitleWhileWaiting
-                ? AwaitingStaticPrefix
-                : "";
+            : StaticPrefix;
         DisplayTitle = prefix + SessionTitle;
     }
 
@@ -667,8 +682,10 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             _sendCts?.Dispose();
             _sendCts = null;
             // Every turn end counts, not just clean ones — Stop and an error
-            // both still leave the window worth glancing back at.
-            _turnUnseen = true;
+            // both still leave the window worth glancing back at. Unless the
+            // user is already in it, in which case they have just watched the
+            // turn end and there is nothing left to announce.
+            _turnUnseen = !IsSessionFocused;
             IsBusy = false;
         }
         RequestScroll();

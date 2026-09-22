@@ -88,6 +88,13 @@ public partial class ChatSessionControl : UserControl
         //    a browser child window that WPF sees no mouse events from.
         GotFocus += (_, _) => viewModel.NotifySessionSeen();
         ChatWebView.Clicked += OnChatClicked;
+
+        // Separately from "seen it", the view model wants to know whether the
+        // user is in this session at the moment a turn ends, so one that ends
+        // under their nose raises no indicator at all. Same two halves: WPF
+        // reports its own chrome, the page reports itself.
+        IsKeyboardFocusWithinChanged += OnKeyboardFocusWithinChanged;
+        ChatWebView.ContentFocusChanged += OnChatContentFocusChanged;
     }
 
     private void OnChatClicked()
@@ -98,6 +105,32 @@ public partial class ChatSessionControl : UserControl
     private void OnPreviewMouseDown(object sender, MouseButtonEventArgs e)
     {
         if (DataContext is ChatSessionViewModel vm) vm.NotifySessionSeen();
+    }
+
+    /// <summary>True while the page reports focus; see <see cref="UpdateSessionFocus"/>.</summary>
+    private bool _chatContentFocused;
+
+    private void OnChatContentFocusChanged(bool hasFocus)
+    {
+        _chatContentFocused = hasFocus;
+        UpdateSessionFocus();
+    }
+
+    private void OnKeyboardFocusWithinChanged(object sender, DependencyPropertyChangedEventArgs e) =>
+        UpdateSessionFocus();
+
+    /// <summary>
+    /// Answers "is the user in this session right now?". Keyboard focus rather
+    /// than logical focus or visibility: it goes false when another pane takes
+    /// over and when VS is sent to the background, both of which mean the user
+    /// is no longer watching — whereas a docked window stays visible either
+    /// way. The page's own answer is OR'd in because focus inside the browser
+    /// child window does not always register as focus within the host.
+    /// </summary>
+    private void UpdateSessionFocus()
+    {
+        if (DataContext is ChatSessionViewModel vm)
+            vm.IsSessionFocused = IsKeyboardFocusWithin || _chatContentFocused;
     }
 
     /// <summary>
@@ -111,6 +144,8 @@ public partial class ChatSessionControl : UserControl
         ChatZoom.Changed -= OnZoomChanged;
         ChatWebView.ZoomChangeRequested -= OnZoomChangeRequested;
         ChatWebView.Clicked -= OnChatClicked;
+        ChatWebView.ContentFocusChanged -= OnChatContentFocusChanged;
+        IsKeyboardFocusWithinChanged -= OnKeyboardFocusWithinChanged;
 
         // A popup is its own window and would outlive the pane it belongs to.
         _zoomToastTimer?.Stop();

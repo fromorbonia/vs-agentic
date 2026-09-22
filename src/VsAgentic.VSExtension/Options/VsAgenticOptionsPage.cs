@@ -94,15 +94,18 @@ public class VsAgenticOptionsPage : DialogPage
     [DefaultValue(true)]
     public bool FlashStatusBarWhileWaiting { get; set; } = true;
 
+    // Property name kept from when this switched a tab icon rather than a title
+    // marker: DialogPage persists by property name, so renaming it would quietly
+    // reset anyone who had turned it off.
     [Category("Appearance")]
-    [DisplayName("Completed - show tab icon")]
-    [Description("Switch the chat window's tab icon to a checkmark once a turn finishes, until you switch to that tab.")]
+    [DisplayName("Completed - show title marker")]
+    [Description("Show a sparkle on the chat window's tab title once a turn finishes, until you switch to that tab. Also shows when the window is backgrounded. Turn off to leave the title alone when a turn ends.")]
     [DefaultValue(true)]
     public bool ShowCompletedIndicator { get; set; } = true;
 
     [Category("Appearance")]
     [DisplayName("Completed - animate tab title")]
-    [Description("Show a sparkle on the chat window's tab title once a turn finishes, until you switch to that tab. Also shows when the window is backgrounded.")]
+    [Description("Pulse the completed marker rather than showing it still. Has no effect unless 'Completed - show title marker' is on.")]
     [DefaultValue(true)]
     public bool AnimateTitleWhenComplete { get; set; } = true;
 
