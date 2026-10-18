@@ -860,7 +860,12 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
 
     private void OnStepUpdated(OutputItem item)
     {
-        if (string.IsNullOrEmpty(item.Delta))
+        var isThinking = item.ToolName == "Thinking";
+
+        // Thinking updates are driven by the CLI's thinking_tokens events, which carry
+        // a live title but no text (the thinking block itself comes back redacted), so
+        // they must not be gated on Delta.
+        if (string.IsNullOrEmpty(item.Delta) && !isThinking)
             return;
 
         Dispatch(() =>
@@ -869,13 +874,14 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             {
                 vm.Content += item.Delta;
 
-                if (item.ToolName == "Thinking")
+                if (isThinking)
                 {
                     vm.ExpanderTitle = item.Title;
                     MessageStatusUpdated?.Invoke(item.Id, vm.Status, item.Title);
                 }
 
-                MessageContentUpdated?.Invoke(item.Id, vm.Content);
+                if (!string.IsNullOrEmpty(item.Delta))
+                    MessageContentUpdated?.Invoke(item.Id, vm.Content);
 
                 var index = Items.IndexOf(vm);
                 if (index >= 0 && index < Items.Count - 1)
